@@ -96,7 +96,7 @@ Each row in the output parquet file corresponds to a single read position and co
 | ctx_plus1 | Downstream base |
 | trinucleotide_ctx | 3-bp context around base |
 | start_context | 5-bp context at read start |
-| end_context | 5-bp åcontext at read end |
+| end_context | 5-bp context at read end |
 | reference_ctx | Reference 5-bp context |
 | local_gc | Local GC fraction |
 | local_complexity_1 | Local sequence complexity (metric 1) |
