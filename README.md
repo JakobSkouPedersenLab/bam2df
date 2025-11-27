@@ -76,6 +76,37 @@ You can customize the output location via:
 --output_dir /desired/output/path
 ```
 
+### Extracted Features
+
+Each row in the output parquet file corresponds to a single read position and contains the following features:
+
+| Field | Description |
+|-------|-------------|
+| qname | Read name |
+| chr | Chromosome |
+| genomic_pos | Genomic position |
+| obs | Observed base |
+| ref | Reference base |
+| strand | Read strand |
+| first_in_pair | 1 if first read in pair |
+| read_index | Base index within the read |
+| fragment_len | Fragment length |
+| seq_length | Total read length |
+| ctx_minus1 | Upstream base |
+| ctx_plus1 | Downstream base |
+| trinucleotide_ctx | 3-bp context around base |
+| start_context | 5-bp context at read start |
+| end_context | 5-bp åcontext at read end |
+| reference_ctx | Reference 5-bp context |
+| local_gc | Local GC fraction |
+| local_complexity_1 | Local sequence complexity (metric 1) |
+| local_complexity_2 | Local sequence complexity (metric 2) |
+| n_other_err | Other read errors (non-mismatch) |
+| base_qual_site | Base quality |
+| dist_to_end | Distance to nearest read end |
+| homopolymer_run_len | Length of homopolymer run |
+| read_depth | Coverage at position |
+
 ## Configuration
 
 ### JSON file
