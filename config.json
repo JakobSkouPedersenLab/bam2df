@@ -1,0 +1,17 @@
+{
+  "bam":
+  {
+    "mm_rate_max": 1.0,
+    "factor": 1.0,
+    "context_flank": 5,
+    "min_len": 0,
+    "max_len": 299,
+    "min_base_quality": 30,
+    "min_mapq": 40,
+    "max_nm": 2,
+    "pre_sample_seed": 0,
+    "n_match_sample": 0,
+    "extract_type": "mismatch",
+    "use_paired_reads": true
+  }
+}
