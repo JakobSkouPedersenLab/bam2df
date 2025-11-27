@@ -17,7 +17,7 @@ conda create -n bam2df python=3.12
 conda activate bam2df
 ```
 
-## 2 .Install Poetry (inside the environment)
+## 2 Install Poetry (inside the environment)
 ```bash
 pip install poetry
 poetry install
