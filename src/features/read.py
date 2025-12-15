@@ -79,10 +79,9 @@ def _is_filtered(filters: "FilterContext", chrom: str, pos: int, patient_id: str
     if donor_blacklist_by_chr and _pos_in_blacklist_chr(donor_blacklist_by_chr, chrom, pos):
         return True
     
-    if patient_blacklists_by_chr and patient_id in patient_blacklists_by_chr:
-        patient_chrom_filters = patient_blacklists_by_chr[patient_id]
+    if patient_blacklists_by_chr:
         for key in ("snp_blacklist", "lowpower_blacklist", "problematic_blacklist"):
-            chr_dict = patient_chrom_filters.get(key)
+            chr_dict = patient_blacklists_by_chr.get(key)
             if chr_dict and _pos_in_blacklist_chr(chr_dict, chrom, pos):
                 return True
     
