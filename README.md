@@ -116,7 +116,6 @@ Each row in the output parquet file corresponds to a single read position and co
 | read_depth | Read depth (coverage) at genomic position |
 | replication_timing | Replication timing value at genomic position |
 
-
 ## Configuration
 
 ### JSON file

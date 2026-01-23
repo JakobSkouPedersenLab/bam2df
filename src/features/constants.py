@@ -7,7 +7,7 @@ OBS_DELETION = "D"
 OBS_MATCH = "M"
 
 _MD_RE = re.compile(r"(\d+)|([A-Z])|\^([A-Z]+)")
-_VALID_CHROMS = [f"chr{i}" for i in range(1, 2)] # 1, 23
+_VALID_CHROMS = [f"chr{i}" for i in range(1, 23)]
 
 _PL_SCHEMA = {
     "qname": pl.Utf8,
