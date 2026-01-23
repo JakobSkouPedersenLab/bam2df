@@ -1,14 +1,21 @@
 import math
+import random
+import numpy as np
 import pysam
 from typing import List, Iterable, Optional, Tuple, Dict
 import re
 import bisect
 import numpy as np
 import polars as pl
-import pyBigWig
 
-from src.utility.data import (FilterContext, ReadFeatureRow, ReferenceCache, calculate_local_complexity,
-                              count_other_errors_in_read, get_read_depth)
+from collections import Counter
+from math import log2
+
+from src.utility.data import (FilterContext, ReadFeatureRow, ReferenceCache, calculate_local_complexity, count_deletions, count_deletions_from_tuples,
+                              count_insertions, count_insertions_from_tuples, count_other_errors_in_read, 
+                              count_other_errors_in_read_fast, get_read_depth, get_read_depth_from_read)
+
+import pyBigWig
 
 _MD_TOKEN_RE = re.compile(r"(\d+)|\^([A-Z]+)|([A-Z])")
 
@@ -172,25 +179,22 @@ def _get_homopolymer_run_length(
 def _build_read_row(
     read: pysam.AlignedSegment,
     bam_path: str,
-    extract_type: str,
     chrom: str,
     pos_1based: int,
-    obs: str,
-    refb: str,
+    obs_type: str,   # "S" / "I" / "D", "M"
+    obs_base: str,   # alt allele string (>=1)
+    obs_ref: str,    # ref allele string (>=1)
     strand: str,
     fragment_len: int,
     query_pos: int,
     ref_cache: ReferenceCache,
     flank: int,
-    start_context: str,
-    end_context: str,
-    n_insertions: int = 0,
-    n_deletions: int = 0,
-    n_softclips: int = 0,
-    n_hardclips: int = 0,
+    start_ctx: str,
+    end_ctx: str,
     other_err: int = 0,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
-    coverage_bw: Optional["pyBigWig.bigWigFile"] = None
+    coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None
 ) -> Optional[ReadFeatureRow]:
     """Optimized per-base feature extraction (CPU + I/O efficient)."""
     # BED filter
@@ -202,18 +206,16 @@ def _build_read_row(
     if len(ref_ctx) < ctx_len:
         return None
 
-    context = ref_ctx
     ctx_m1, ctx_p1 = ref_ctx[flank - 1], ref_ctx[flank + 1]
-    lc1, lc2 = calculate_local_complexity(context)
-    gc_frac = (context.count("G") + context.count("C")) / ctx_len
+    lc1, lc2 = calculate_local_complexity(ref_ctx)
+    gc_frac = (ref_ctx.count("G") + ref_ctx.count("C")) / ctx_len
 
     md_tag_raw = read.get_tag("MD")
     md_tag = str(md_tag_raw) if md_tag_raw is not None else ""
-    other_err = count_other_errors_in_read(md_tag) - (
-        1 if extract_type == "mismatch" else 0
-    )
+    # subtract 1 only for SNVs
+    other_err = count_other_errors_in_read(md_tag) - (1 if obs_type == "S" else 0)
     
-    # Load coverage
+    # Coverage
     if coverage_bw is not None:
         cov = coverage_bw.values(chrom, pos_1based - 1, pos_1based)
         if cov and cov[0] is not None and not math.isnan(cov[0]):
@@ -222,18 +224,40 @@ def _build_read_row(
             read_depth = 0
     else:
         read_depth = get_read_depth(bam_path, chrom, pos_1based - 1)
+        
+    # Replication timing
+    if replication_bw is not None:
+        rt = replication_bw.values(chrom, pos_1based - 1, pos_1based)
+        if rt and rt[0] is not None and not math.isnan(rt[0]):
+            replication_timing = float(rt[0])
+        else:
+            replication_timing = np.nan
+    else:
+        replication_timing = np.nan
     
     base_qual_site = _get_base_qual_at(read, query_pos)
     dist_to_end = _get_dist_to_read_end(read, query_pos)
     dist_to_indel_or_clip = _get_dist_to_indel_or_clip(read, pos_1based - 1)
     homopolymer_run_len = _get_homopolymer_run_length(ref_cache, chrom, pos_1based)
+    
+    # Allele-length features
+    obs_alt_len = len(obs_base) if obs_base is not None else 0
+    obs_ref_len = len(obs_ref) if obs_ref is not None else 0
+    len_delta = obs_alt_len - obs_ref_len
             
     return ReadFeatureRow(
         qname=read.query_name,
         chr=chrom,
         genomic_pos=pos_1based,
-        obs=obs,
-        ref=refb,
+
+        # Allele
+        obs_type=obs_type,
+        obs_base=obs_base,
+        obs_ref=obs_ref,
+        obs_alt_len=obs_alt_len,
+        obs_ref_len=obs_ref_len,
+        len_delta=len_delta,
+
         strand=strand,
         first_in_pair=int(read.is_read1),
         read_index=query_pos - read.query_alignment_start + 1,
@@ -241,11 +265,9 @@ def _build_read_row(
         seq_length=read.query_alignment_length,
 
         # Context
-        ctx_minus1=ctx_m1,
-        ctx_plus1=ctx_p1,
-        trinucleotide_ctx=f"{ctx_m1}{refb}{ctx_p1}",
-        start_context=start_context,
-        end_context=end_context,
+        trinucleotide_ctx=f"{ctx_m1}{ref_ctx[flank]}{ctx_p1}",
+        start_ctx=start_ctx,
+        end_ctx=end_ctx,
         reference_ctx=ref_ctx,
         local_gc=gc_frac,
         local_complexity_1=lc1,
@@ -261,4 +283,7 @@ def _build_read_row(
 
         # Coverage
         read_depth=read_depth,
+
+        # Replication
+        replication_timing=replication_timing
     )

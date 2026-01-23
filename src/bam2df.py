@@ -8,9 +8,11 @@ import polars as pl
 import pyBigWig
 import pickle
 
+from scipy.sparse import csr_matrix, load_npz
+
 from src.features.feature_extractor import ReadFeatureExtractor
 from src.features.labeling import add_tumor_mutation_labels
-from src.utility.data import FilterContext
+from src.utility.data import ChromatinResources, FilterContext
 from src.utility.sample import get_sample_id
 from src.features.bam_processor import BamProcessor
 
@@ -80,6 +82,34 @@ def load_blacklists(args, patient_id: str):
         donor_blacklist_by_chr=donor_by_chr,
         patient_blacklists_by_chr=patient_blacklists_by_chr,
     )
+    
+def load_chromatin_resources(root: Path, modalities: tuple[str]) -> ChromatinResources:
+    consensus_masks: dict[str, dict[str, csr_matrix]] = {}
+
+    for modality in modalities:
+        masks_dir = (
+            root
+            / "chromatin_masks"
+            / modality
+            / "sparse_overlaps_by_chromosome"
+            / "consensus"
+        )
+
+        if not masks_dir.exists():
+            raise FileNotFoundError(f"Consensus masks dir not found: {masks_dir}")
+
+        by_chr: dict[str, csr_matrix] = {}
+
+        for path in masks_dir.glob("*.npz"):
+            chrom = path.stem
+            by_chr[chrom] = load_npz(path).tocsr()
+
+        if not by_chr:
+            raise RuntimeError(f"No consensus NPZ files found in {masks_dir}")
+
+        consensus_masks[modality] = by_chr
+
+    return ChromatinResources(consensus_masks=consensus_masks)
 
 def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
     """
@@ -90,6 +120,18 @@ def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
     out_dir = output_file.parent
     sample_id = output_file.stem
     meta_path = out_dir / f"{sample_id}_metadata.csv"
+    
+    sample_id = get_sample_id(str(output_file))
+    
+    # Add sample_id column
+    info_df = info_df.with_columns(
+        pl.lit(sample_id).alias("sample_id")
+    )
+    
+    # Ensure sample_id is first column
+    info_df = info_df.select(
+        ["sample_id"] + [c for c in info_df.columns if c != "sample_id"]
+    )
 
     info_df.write_csv(meta_path)
     return meta_path
@@ -116,17 +158,26 @@ def main():
             print(f"[INFO] No mutation file found at {args.mutation_path}, continuing without it.")
     else:
         print("[INFO] No mutation file provided, continuing without mutation index.")
-
-    patient_id = get_patient_id(args.bam_path)
-    filters = load_blacklists(args, patient_id)
-
+        
+    # Optional chromatin
+    chromatin_path = Path(args.chromatin_path)
+    if chromatin_path is not None:
+        chromatin_resources = load_chromatin_resources(chromatin_path, modalities=("ATAC", "DNase"))
+        
     # Optional coverage
     bw_handle = None
     if args.coverage_path and os.path.exists(args.coverage_path):
         try:
             bw_handle = pyBigWig.open(args.coverage_path)
         except Exception as e:
-            print(f"[WARN] Failed to open coverage bigWig: {e}", flush=True)
+            print(f"[WARN] Failed to open coverage bigWig: {e}", flush=True) 
+            
+    # Optional replication timing
+    replication_path = args.replication_path if args.replication_path and os.path.exists(args.replication_path) else None
+
+    # Optional filters
+    patient_id = get_patient_id(args.bam_path)
+    filters = load_blacklists(args, patient_id)
 
     processor = BamProcessor(cfg=bam_config, reference_path=args.reference_path,
                              verbose=args.verbose, filters=filters,

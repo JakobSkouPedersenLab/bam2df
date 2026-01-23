@@ -1,6 +1,17 @@
-from typing import Dict, Tuple
+from collections import Counter
+from itertools import product
+from math import log2
+import os
+import re
+from typing import Dict, List, Optional, Tuple
+import numpy as np
+import pandas as pd
 import pysam
+import os
+import gzip
+import pandas as pd
 
+# Caching setup: dictionary to store coverage arrays for regions
 coverage_cache: dict[tuple[str, int], list[int]] = ({})  # Key: (contig, segment_start); Value: coverage array for that segment
 CACHE_SEGMENT_SIZE = 10_000 # e.g., cache coverage in 1000-base segments to reuse across close positions
 MAX_SEGMENTS_CACHED = 20  # Limit cache size to avoid memory blow-up in extremely deep coverage scenarios

@@ -1,29 +1,71 @@
+import contextlib
+import csv
+import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
+import multiprocessing as mp
 from bisect import bisect_right
 
+import numpy as np
 import polars as pl
 import pysam
+import gc
+import psutil
 
-def _read_has_mismatches(read: pysam.AlignedSegment) -> bool:
+from collections import defaultdict
+
+def read_matches_any_type(read, mutation_types, read_predicates) -> bool:
+    for m in mutation_types:
+        predicate = read_predicates[m]
+        if predicate(read):
+            return True
+    return False
+
+def read_matches_any_type_in_overlap(read, overlap, highqual_overlap, mutation_types, overlap_predicates):
+    for m in mutation_types:
+        if overlap_predicates[m](read, overlap, highqual_overlap):
+            return True
+    return False
+
+def read_has_indel(read: pysam.AlignedSegment) -> bool:
+    if read.cigartuples is None:
+        return False
+    return any(op in (1, 2) for op, _ in read.cigartuples)
+
+def read_has_mismatch(read: pysam.AlignedSegment) -> bool:
     """
-    Return True if the read contains one or more mismatches, insertions, or deletions
-    according to the NM tag. Returns False if NM == 0 or tag is missing.
-
-    NM (edit distance) counts mismatches + indels vs. reference.
+    Coarse check: NM > (#insertions + #deletions)
     """
     try:
         nm = read.get_tag("NM")
-        return nm > 0
     except KeyError:
-        # Missing NM tag — conservative choice: assume no mismatches
+        return False
+
+    if read.cigartuples is None:
+        return nm > 0
+
+    indel_bases = sum(
+        length for op, length in read.cigartuples if op in (1, 2)
+    )
+    
+    return nm > indel_bases
+
+def read_is_perfect_match(read: pysam.AlignedSegment) -> bool:
+    try:
+        return read.get_tag("NM") == 0
+    except KeyError:
         return False
 
 def _high_quality_overlap(read, mate, overlap, min_bq):
     """
     Identify high-quality overlapping reference positions between two reads.
     """
-
     if min_bq is None:
         start, end = overlap
         return list(range(start, end))
@@ -81,7 +123,6 @@ def _high_quality_single_read(read, min_bq):
     return highqual
 
 def _read_filters(read: pysam.AlignedSegment,
-                  extract_type: str,
                   min_mapq: int,
                   max_nm: int) -> bool:
     """
@@ -94,12 +135,6 @@ def _read_filters(read: pysam.AlignedSegment,
     if has_clip:
         return False
     
-    # Check for indels
-    if extract_type != "indel":
-        has_indel = sum(cigar_stats[1:4]) != 0 # I, D, N (BAM_CINS, BAM_CDEL, BAM_CREF_SKIP)
-        if has_indel:
-            return False
-        
     # Basic read-level flags
     if (
         read.is_unmapped

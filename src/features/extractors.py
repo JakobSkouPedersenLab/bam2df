@@ -1,199 +1,250 @@
+from itertools import chain
 import random
-from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union
 import pysam
-import pyBigWig
 
+from src.features.constants import OBS_DELETION, OBS_INSERTION, OBS_MATCH, OBS_SNV
 from src.features.filters import _in_bed_1based
 from src.features.reference import ReferenceCache
-from src.utility.data import (FilterContext, ReadFeatureRow, count_cigar_events, count_other_errors_in_read_fast)
-from src.features.read import _build_read_row, _is_filtered, _iter_mismatches_non_re
+from src.utility.data import (FilterContext, ReadFeatureRow, contains_indel_or_clip, count_cigar_events, count_deletions_from_tuples,
+                              count_insertions_from_tuples, count_other_errors_in_read_fast)
+from src.features.read import _build_read_row, _is_filtered, _iter_mismatches, _iter_mismatches_non_re
+
+import pyBigWig
+
+def _fetch_ref_span_1based(ref_cache: ReferenceCache, chrom: str, start_1based: int, length: int) -> str:
+    """Fetch reference bases for [start_1based, start_1based+length-1] using the cache's single-position API."""
+    bases = []
+    for p in range(start_1based, start_1based + length):
+        try:
+            b = ref_cache.fetch(chrom, p, 0).upper()
+        except Exception:
+            b = "N"
+        bases.append(b)
+    return "".join(bases)
 
 def extract_read_features(
     read: pysam.AlignedSegment,
     bam_path: str,
     patient_id: str,
     ref_cache: ReferenceCache,
-    extract_type: str,
+    mutation_types: list[str],
     context_flank: int,
-    start_context: str,
-    end_context: str,
+    start_ctx: str,
+    end_ctx: str,
     overlap: Optional[Tuple[int, int]] = None,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None,
     filters: Optional[FilterContext] = None,
     highqual_positions: Optional[set[int]] = None,
 ) -> Tuple[Iterator[ReadFeatureRow], int]:
     """Yield one or more feature rows for the given read."""
+    
     seq = read.query_sequence
+    if not seq:
+        return iter(()), 0
+    
     seq_upper = seq.upper()
     chrom_str = read.reference_name or ""
     strand = "fwd" if not read.is_reverse else "rev"
     frag_len = abs(read.template_length)
     
-    # Route by extract type
-    if extract_type == "indel":
-        return _extract_indels_from_read(
-            read=read,
-            bam_path=bam_path,
-            ref_cache=ref_cache,
-            chrom_str=chrom_str,
-            strand=strand,
-            frag_len=frag_len,
-            context_flank=context_flank,
-            start_context=start_context,
-            end_context=end_context,
-            bed_lookup=bed_lookup,
-            coverage_bw=coverage_bw
-        )
+    generators = []
+    total_n_opp = 0
+    
+    for mutation_type in mutation_types:
+        if mutation_type == "indel":
+            gen, n_opp = _extract_indels_from_read(
+                read=read,
+                bam_path=bam_path,
+                patient_id=patient_id,
+                ref_cache=ref_cache,
+                chrom=chrom_str,    
+                strand=strand,
+                frag_len=frag_len,
+                context_flank=context_flank,
+                start_ctx=start_ctx,
+                end_ctx=end_ctx,
+                bed_lookup=bed_lookup,
+                coverage_bw=coverage_bw,
+                replication_bw=replication_bw,
+                filters=filters,
+                highqual_positions=highqual_positions,
+            )                                                                                                                                               
+        elif mutation_type == "match":
+            gen, n_opp = _extract_matches_from_read(
+                read=read,
+                bam_path=bam_path,
+                patient_id=patient_id,
+                ref_cache=ref_cache,
+                chrom_str=chrom_str,
+                strand=strand,
+                frag_len=frag_len,
+                context_flank=context_flank,
+                start_ctx=start_ctx,
+                end_ctx=end_ctx,
+                bed_lookup=bed_lookup,
+                seq_upper=seq_upper,
+                coverage_bw=coverage_bw,
+                replication_bw=replication_bw,
+                filters=filters,
+                highqual_positions=highqual_positions,
+            )
+        elif mutation_type == "mismatch":
+            gen, n_opp = _extract_mismatches_from_read(
+                read=read,
+                bam_path=bam_path,
+                patient_id=patient_id,
+                ref_cache=ref_cache,
+                chrom_str=chrom_str,
+                strand=strand,
+                frag_len=frag_len,
+                context_flank=context_flank,
+                start_ctx=start_ctx,
+                end_ctx=end_ctx,
+                bed_lookup=bed_lookup,
+                overlap=overlap,
+                coverage_bw=coverage_bw,
+                replication_bw=replication_bw,
+                filters=filters,
+                highqual_positions=highqual_positions,
+            )
+        else:
+            raise ValueError(f"Invalid mutation type: {mutation_type}")
 
-    if extract_type == "match":
-        return _extract_matches_from_read(
-            read=read,
-            bam_path=bam_path,
-            ref_cache=ref_cache,
-            chrom_str=chrom_str,
-            strand=strand,
-            frag_len=frag_len,
-            context_flank=context_flank,
-            start_context=start_context,
-            end_context=end_context,
-            bed_lookup=bed_lookup,
-            seq_upper=seq_upper,
-            coverage_bw=coverage_bw,
-            highqual_positions=highqual_positions
-        )
+        if n_opp > 0:
+            generators.append(gen)
+            total_n_opp += n_opp
 
-    if extract_type == "mismatch":
-        return _extract_mismatches_from_read(
-            read=read,
-            bam_path=bam_path,
-            patient_id=patient_id,
-            ref_cache=ref_cache,
-            chrom_str=chrom_str,
-            strand=strand,
-            frag_len=frag_len,
-            context_flank=context_flank,
-            start_context=start_context,
-            end_context=end_context,
-            bed_lookup=bed_lookup,
-            overlap=overlap,
-            coverage_bw=coverage_bw,
-            filters=filters,
-            highqual_positions=highqual_positions,
-        )
+    if not generators:
+        return iter(()), 0
 
-    raise ValueError(f"Invalid extract_type: {extract_type}")
+    return chain.from_iterable(generators), total_n_opp
 
 def _extract_indels_from_read(
     read: pysam.AlignedSegment,
     bam_path: str,
+    patient_id: str,
     ref_cache: ReferenceCache,
-    chrom_str: str,
+    chrom: str,
     strand: str,
     frag_len: int,
     context_flank: int,
-    start_context: str,
-    end_context: str,
+    start_ctx: str,
+    end_ctx: str,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
+    filters: Optional["FilterContext"] = None,
+    highqual_positions: Optional[set[int]] = None,
     coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None
 ) -> Tuple[Iterator[ReadFeatureRow], int]:
-    """
-    Extract insertion/deletion rows using match-style logic:
-    - First collect all candidate indel positions cheaply.
-    - Then lazily build rows via a generator.
-    - Returns (iterator, n_opp) where n_opp = number of indels.
-    """
+    """Extract indels."""
     seq = read.query_sequence
-    if not seq:
+    if not seq or read.is_unmapped or not read.cigartuples:
         return iter(()), 0
 
-    seq_upper = seq.upper()
-    
-    if read.is_unmapped or not read.cigartuples:
-        return iter(()), 0
+    # (qpos, rpos0, obs_type, obs_ref, obs_base)
+    candidates: list[tuple[int, int, str, str, str]] = []
 
-    candidates: list[tuple[int, int, str]] = []  # (qpos, rpos, obs)
-
-    ref_pos = read.reference_start
+    ref_pos0 = read.reference_start  # 0-based
     query_pos = 0
-    cigar = read.cigartuples or []
-    
-    for op, length in cigar:
-        # M / = / X
-        if op in (0, 7, 8):
-            ref_pos += length
+
+    for op, length in read.cigartuples:
+        if op in (0, 7, 8):  # M, =, X
+            ref_pos0 += length
             query_pos += length
 
-        # INSERTION (I)
-        elif op == 1:
-            obs_base = "I"
-            indel_pos = ref_pos  # 1bp before insertion (0-based)
-            pos_1based = indel_pos + 1
+        elif op == 1:  # INSERTION (bases present in read, reference pos unchanged)
+            ins = seq[query_pos: query_pos + length].upper()
 
-            # Fetch reference
+            pos_1based = ref_pos0 + 1
             try:
-                refb = ref_cache.fetch(chrom_str, pos_1based, pos_1based).upper()
+                anchor = ref_cache.fetch(chrom, pos_1based, 0).upper()
             except Exception:
-                refb = "N"
+                anchor = "N"
 
-            candidates.append((query_pos, indel_pos, obs_base))
+            obs_type = OBS_INSERTION
+            obs_ref = anchor
+            obs_base = anchor + ins
 
-            query_pos += length  # consumes query
-
-        # DELETION (D)
-        elif op == 2:
-            obs_base = "D"
-            indel_pos = ref_pos  # deleted reference position
-            pos_1based = indel_pos + 1
-
-            try:
-                refb = ref_cache.fetch(chrom_str, pos_1based, pos_1based).upper()
-            except Exception:
-                refb = "N"
-
-            candidates.append((query_pos, indel_pos, obs_base))
-
-            ref_pos += length  # consumes reference
-
-        # SKIP (N)
-        elif op == 3:
-            ref_pos += length
-
-        # SOFT/HARD CLIP (S/H)
-        elif op in (4, 5):
+            candidates.append((query_pos, ref_pos0, obs_type, obs_ref, obs_base))
             query_pos += length
+
+        elif op == 2:  # DELETION (bases absent in read, reference advances)
+            pos_1based = ref_pos0 + 1
+            try:
+                anchor = ref_cache.fetch(chrom, pos_1based, 0).upper()
+            except Exception:
+                anchor = "N"
+
+            deleted = _fetch_ref_span_1based(ref_cache, chrom, pos_1based + 1, length)  # bases AFTER anchor
+            obs_type = OBS_DELETION
+            obs_ref = anchor + deleted
+            obs_base = anchor
+
+            candidates.append((query_pos, ref_pos0, obs_type, obs_ref, obs_base))
+            ref_pos0 += length
+
+        elif op == 3:  # N
+            ref_pos0 += length
+
+        elif op == 4:  # S (soft clip consumes query)
+            query_pos += length
+
+        elif op == 5:  # H (hard clip consumes neither)
+            pass
+
+    if not candidates:
+        return iter(()), 0
+
+    # Apply high-quality filtering
+    if highqual_positions:
+        if not isinstance(highqual_positions, set):
+            highqual_positions = set(highqual_positions)
+
+        candidates = [
+            (qpos, rpos0, obs_type, obs_ref, obs_base)
+            for (qpos, rpos0, obs_type, obs_ref, obs_base) in candidates
+            if rpos0 in highqual_positions
+        ]
+
+    # Apply region / BED filters
+    if filters is not None:
+        f = filters
+        is_filt = _is_filtered
+        candidates = [
+            (qpos, rpos0, obs_type, obs_ref, obs_base)
+            for (qpos, rpos0, obs_type, obs_ref, obs_base) in candidates
+            if not is_filt(f, chrom, rpos0, patient_id)
+        ]
 
     n_opp = len(candidates)
     if n_opp == 0:
         return iter(()), 0
-        
-    def _gen() -> Iterator[ReadFeatureRow]:
-        for qpos, rpos, obs_base in candidates:
-            pos_1based = rpos + 1
 
-            try:
-                refb = ref_cache.fetch(chrom_str, pos_1based, 0).upper()
-            except Exception:
-                refb = "N"
+    def _gen() -> Iterator[ReadFeatureRow]:
+        for qpos, rpos0, obs_type, obs_ref, obs_base in candidates:
+            pos_1based = rpos0 + 1
 
             row = _build_read_row(
                 read=read,
                 bam_path=bam_path,
-                extract_type="indel",
-                chrom=chrom_str,
+                chrom=chrom,
                 pos_1based=pos_1based,
-                obs=obs_base,
-                refb=refb,
+                obs_type=obs_type,
+                obs_base=obs_base,
+                obs_ref=obs_ref,
                 strand=strand,
                 fragment_len=frag_len,
                 query_pos=qpos,
                 ref_cache=ref_cache,
                 flank=context_flank,
-                start_context=start_context,
-                end_context=end_context,
+                start_ctx=start_ctx,
+                end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
                 coverage_bw=coverage_bw,
+                replication_bw=replication_bw
             )
             if row is not None:
                 yield row
@@ -203,17 +254,19 @@ def _extract_indels_from_read(
 def _extract_matches_from_read(
     read: pysam.AlignedSegment,
     bam_path: str,
+    patient_id: str,
     ref_cache: ReferenceCache,
     chrom_str: str,
     strand: str,
     frag_len: int,
     context_flank: int,
-    start_context: str,
-    end_context: str,
+    start_ctx: str,
+    end_ctx: str,
     seq_upper: str,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     overlap: Optional[Tuple[int, int]] = None,
     coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None,
     filters: Optional["FilterContext"] = None,
     highqual_positions: Optional[set[int]] = None,
 ) -> Tuple[Iterator["ReadFeatureRow"], int]:
@@ -239,7 +292,7 @@ def _extract_matches_from_read(
             continue
         if bed_lookup and not _in_bed_1based(chrom_str, rpos + 1, bed_lookup):
             continue
-        if filters and _is_filtered(filters, chrom_str, rpos, "NA"):
+        if filters and _is_filtered(filters, chrom_str, rpos, patient_id):
             continue
         candidates.append((qpos, rpos, rbase))
 
@@ -250,23 +303,28 @@ def _extract_matches_from_read(
     def _gen() -> Iterator["ReadFeatureRow"]:
         qpos, rpos, rbase = random.choice(candidates)
         pos_1based = rpos + 1
+
+        ref_base = rbase.upper()
+        obs_base = seq_upper[qpos]
+        
         row = _build_read_row(
             read=read,
             bam_path=bam_path,
-            extract_type="match",
             chrom=chrom_str,
             pos_1based=pos_1based,
-            obs=seq_upper[qpos],
-            refb=rbase.upper(),
+            obs_type=OBS_MATCH,
+            obs_base=obs_base,
+            obs_ref=ref_base,
             strand=strand,
             fragment_len=frag_len,
             query_pos=qpos,
             ref_cache=ref_cache,
             flank=context_flank,
-            start_context=start_context,
-            end_context=end_context,
+            start_ctx=start_ctx,
+            end_ctx=end_ctx,
             bed_lookup=bed_lookup,
-            coverage_bw=coverage_bw
+            coverage_bw=coverage_bw,
+            replication_bw=replication_bw
         )
         if row is not None:
             yield row
@@ -282,11 +340,12 @@ def _extract_mismatches_from_read(
     strand: str,
     frag_len: int,
     context_flank: int,
-    start_context: str,
-    end_context: str,
+    start_ctx: str,
+    end_ctx: str,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     overlap: Optional[Tuple[int, int]] = None,
     coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None,
     filters: Optional[FilterContext] = None,
     highqual_positions: Optional[set[int]] = None,
 ) -> Tuple[Iterator[ReadFeatureRow], int]:
@@ -338,31 +397,28 @@ def _extract_mismatches_from_read(
                 continue
 
             obs_base = seq_upper[qpos]
-            refb = ref_base.upper()
+            obs_ref = ref_base.upper()
             pos_1based = rpos + 1
             
             row = _build_read_row(
                 read=read,
                 bam_path=bam_path,
-                extract_type="mismatch",
                 chrom=chrom_str,
                 pos_1based=pos_1based,
-                obs=obs_base,
-                refb=refb,
+                obs_type=OBS_SNV,
+                obs_base=obs_base,
+                obs_ref=obs_ref,
                 strand=strand,
                 fragment_len=frag_len,
                 query_pos=qpos,
                 ref_cache=ref_cache,
                 flank=context_flank,
-                start_context=start_context,
-                end_context=end_context,
-                n_insertions=n_ins,
-                n_deletions=n_del,
-                n_softclips=n_soft, 
-                n_hardclips=n_hard,
+                start_ctx=start_ctx,
+                end_ctx=end_ctx,
                 other_err=other_err,
                 bed_lookup=bed_lookup,
                 coverage_bw=coverage_bw,
+                replication_bw=replication_bw
             )
             if row is not None:
                 yield row

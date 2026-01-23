@@ -1,29 +1,34 @@
 from typing import Optional, Tuple
 import polars as pl
 
-from src.features.feature_extractor import ReadFeatureExtractor
+from src.features.chr_processor import ChromosomeProcessor
 from src.utility.sample import get_patient_id, get_sample_id
-from src.utility.data import ChromStats, FilterContext, GenomeStats
+from src.utility.data import ChromStats, ChromatinResources, FilterContext, GenomeStats
 
 import pyBigWig
 
 class BamProcessor:
     """
     High-level orchestrator for processing one BAM file into model-ready data.
-    Wraps ReadFeatureExtractor and applies post-extraction filtering, sampling,
-    and feature normalization.
     """
-    def __init__(self, cfg,
-                 reference_path,
+    def __init__(self,
+                 cfg: dict,
+                 reference_path: str,
                  verbose: bool = False,
                  filters: Optional[FilterContext] = None,
-                 coverage_bw: Optional["pyBigWig.bigWigFile"] = None):
+                 coverage_path: str = None,
+                 replication_path: str = None,
+                 chromatin: ChromatinResources = None,
+                 n_workers: int = 1):
         
         self.cfg = cfg
         self.reference_path = reference_path
         self.verbose = verbose
         self.filters = filters
-        self.coverage_bw = coverage_bw
+        self.coverage_path = coverage_path
+        self.replication_path = replication_path
+        self.chromatin = chromatin
+        self.n_workers = n_workers
 
     def extract_data(self, bam_path: str) -> Tuple[pl.DataFrame, pl.DataFrame]:
         """
@@ -32,92 +37,44 @@ class BamProcessor:
         if self.verbose:
             print(f"[BamProcessor:INFO] Extracting data from {bam_path}", flush=True)
 
-        extractor = ReadFeatureExtractor(
-            bam_path,
-            config=self.cfg,
-            reference_path=self.reference_path,
-            verbose=self.verbose,
-            filters=self.filters,
-            coverage_bw=self.coverage_bw,
-        )
+        chr_processor = ChromosomeProcessor(config=self.cfg,
+                                            verbose=self.verbose,
+                                            filters=self.filters,
+                                            coverage_path=self.coverage_path,
+                                            replication_path=self.replication_path,
+                                            chromatin=self.chromatin,
+                                            n_workers=self.n_workers)
 
         patient_id = get_patient_id(bam_path)
         sample_id = get_sample_id(bam_path)
 
         bed_path = self.cfg.get("bed_file")
-        extract_type = self.cfg.get("extract_type")
-
-        # Extract mismatch data (if requested)
-        mismatches_df = pl.DataFrame()
-        mismatch_stats = None
-
-        if extract_type == "mismatch":
-            mismatches_df, mismatch_stats = self._extract_df(
-                extractor,
-                bam_path,
-                "mismatch",
-                patient_id,
-                sample_id,
-                bed_path,
-            )
-
-        # Extract match data (if requested)
-        matches_df = pl.DataFrame()
-        match_stats = None
-
-        if extract_type == "match":
-            factor = self.cfg.get("factor", 1.0)
-            n_matches = int(len(mismatches_df) * factor)
-            matches_df, match_stats = self._extract_df(
-                extractor,
-                bam_path,
-                "match",
-                patient_id,
-                sample_id,
-                bed_path,
-                n_match_sample=n_matches,
-            )
-
-        # Extract indel data (if requested)
-        indels_df = pl.DataFrame()
-        indel_stats = None
-
-        if extract_type == "indel":
-            indels_df, indel_stats = self._extract_df(
-                extractor,
-                bam_path,
-                "indel",
-                patient_id,
-                sample_id,
-                bed_path,
-            )
-
-        # Combine data frames depending on extract type
-        if extract_type == "mismatch":
-            data = mismatches_df
-        elif extract_type == "match":
-            data = matches_df
-        else:
-            data = indels_df
-
-        # Combine stats
+        mutation_types = self.cfg.get("mutation_types")
+        
+        # Exctract data
+        df, stats = self._extract_df(
+            chr_processor=chr_processor,
+            bam_path=bam_path,
+            mutation_types=mutation_types,
+            patient_id=patient_id,
+            sample_id=sample_id,
+            bed_path=bed_path,
+        )
+        
+        # Collect stats
         total_stats = ChromStats()
-
-        for stats in (mismatch_stats, match_stats, indel_stats):
-            if stats is not None:
-                total_stats += stats.total
-
+        total_stats += stats.total
         info = self.summarize_info(total_stats)
-
+        
         if self.verbose:
             print(f"[BamProcessor:INFO] Completed BAM: {bam_path}", flush=True)
 
-        return data, info
+        return df, info
 
     def _extract_df(self,
-                    extractor,
+                    chr_processor: ChromosomeProcessor,
                     bam_path: str,
-                    kind: str,
+                    mutation_types: list[str],
                     patient_id: str,
                     sample_id: str,
                     bed_path: str,
@@ -126,11 +83,16 @@ class BamProcessor:
         Extracts one type (mismatch/match/indel), attaches patient/sample IDs,
         and returns (df, stats). Returns (empty_df, None) if extraction yields nothing.
         """
-        df, stats = extractor.extract(bam_path, kind, bed_path=bed_path, **kwargs)
-
+        df, genome_stats = chr_processor.process(
+            bam_path=bam_path,
+            reference_path=self.reference_path,
+            mutation_types=mutation_types,
+            bed_path=bed_path,
+        )
+        
         if df.is_empty():
             if self.verbose:
-                print(f"[BamProcessor:WARN] No {kind} data extracted.", flush=True)
+                print(f"[BamProcessor:WARN] No {mutation_types} data extracted.", flush=True)
             return pl.DataFrame(), ChromStats()
 
         n_rows = df.height
@@ -140,7 +102,7 @@ class BamProcessor:
         })
 
         df = pl.concat([df, id_df], how="horizontal")
-        return df, stats
+        return df, genome_stats
 
     @staticmethod
     def combine_mismatches_matches(pos: pl.DataFrame,

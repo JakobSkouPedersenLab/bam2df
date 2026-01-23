@@ -1,7 +1,48 @@
+import contextlib
+import csv
+import os
+from pathlib import Path
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
 from typing import Dict, Iterable, List, Optional, Tuple
+import multiprocessing as mp
+from bisect import bisect_right
+
+import numpy as np
+import polars as pl
 import pysam
+import gc
+import psutil
+
+from collections import defaultdict
 
 from src.features.constants import _MD_RE
+from src.utility.data import FilterContext
+
+def perfect_match_in_overlap(read: pysam.AlignedSegment,
+                             overlap: tuple[int, int],
+                             highqual_positions: Optional[set[int]] = None) -> bool:
+    """
+    Return True if the read perfectly matches the reference across the overlap:
+    no mismatches and no indels intersecting the region.
+    """
+    start, end = overlap
+    if start >= end:
+        return False
+
+    # Any mismatch disqualifies
+    if mismatch_in_overlap(read, overlap, highqual_positions):
+        return False
+
+    # Any indel overlapping disqualifies
+    if indel_in_overlap(read, overlap, highqual_positions):
+        return False
+
+    return True
 
 def _extract_read_end_context(read, k: int = 5):
     """
@@ -74,9 +115,9 @@ def _extract_fragment_end_context(read, mate, k: int = 5):
 
     return start_context, end_context
 
-def _mismatches_in_overlap(read: pysam.AlignedSegment,
-                           overlap: tuple[int, int],
-                           highqual_positions: Optional[set[int]] = None) -> bool:
+def mismatch_in_overlap(read: pysam.AlignedSegment,
+                        overlap: tuple[int, int],
+                        highqual_positions: Optional[set[int]] = None) -> bool:
     """
     Return True if the read contains at least one mismatch within the overlap region.
     Uses the MD tag to quickly infer mismatch positions without parsing CIGAR pairs.
@@ -126,6 +167,57 @@ def _mismatches_in_overlap(read: pysam.AlignedSegment,
             ref_pos += len(match.group(3))
 
     return False  # no mismatches in overlap
+
+def indel_in_overlap(read: pysam.AlignedSegment,
+                     overlap: tuple[int, int],
+                     highqual_positions: Optional[set[int]] = None) -> bool:
+    """
+    Return True if the read contains an insertion or deletion overlapping
+    the given reference interval and (if provided) touching a high-quality
+    reference position.
+    """
+    start, end = overlap
+    if start >= end:
+        return False
+
+    if read.cigartuples is None:
+        return False
+
+    ref_pos = read.reference_start
+
+    for op, length in read.cigartuples:
+        if op == 0:  # M
+            ref_pos += length
+
+        elif op == 2:  # D (deletion consumes reference)
+            del_start = ref_pos
+            del_end = ref_pos + length
+
+            # overlap with region?
+            if del_start < end and del_end > start:
+                if highqual_positions is None:
+                    return True
+                # check if ANY deleted ref position is high-quality
+                for p in range(max(del_start, start), min(del_end, end)):
+                    if p in highqual_positions:
+                        return True
+
+            ref_pos += length
+
+        elif op == 1:  # I (insertion anchored at ref_pos)
+            if start <= ref_pos < end:
+                if highqual_positions is None or ref_pos in highqual_positions:
+                    return True
+            # ref_pos unchanged
+
+        elif op == 3:  # N
+            ref_pos += length
+
+        else:
+            # S, H, P
+            pass
+
+    return False
 
 def _is_identical_to_ref(
     read: pysam.AlignedSegment,

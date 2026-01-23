@@ -1,8 +1,11 @@
+import atexit
 from collections import Counter
 from itertools import product
 from math import log2
 import os
+import pathlib
 import re
+import shutil
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
@@ -10,6 +13,7 @@ import pysam
 import os
 import gzip
 import pandas as pd
+from scipy.sparse import csr_matrix
 
 from src.utility.sample import get_patient_id, get_sample_id
 
@@ -121,6 +125,10 @@ class FilterContext:
     genomic_blacklist_by_chr: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
     donor_blacklist_by_chr: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
     patient_blacklists_by_chr: Optional[Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]]] = None
+
+@dataclass(frozen=True)
+class ChromatinResources:
+    consensus_masks: Dict[str, Dict[str, csr_matrix]]
 
 class ReferenceCache:
     """Fetch reference chunks and keep a sliding window cache per contig."""
@@ -661,3 +669,37 @@ def rows_to_polars(rows, schema=None):
             cols[k][i] = v
 
     return pl.DataFrame(cols, schema=schema)
+
+def get_hpc_tmp_dir(prefix: str) -> pathlib.Path:
+    """
+    Returns a job-local temporary directory suitable for large intermediate data.
+    Tries TMPDIR, then /tmp/$SLURM_JOB_ID, then TMP, then /tmp/<prefix>-<pid>.
+    Ensures directory exists and registers cleanup.
+    """
+
+    candidates = []
+
+    if "TMPDIR" in os.environ:
+        candidates.append(os.environ["TMPDIR"])
+
+    if "SLURM_JOB_ID" in os.environ:
+        candidates.append(f"/tmp/{os.environ['SLURM_JOB_ID']}")
+
+    if "TMP" in os.environ:
+        candidates.append(os.environ["TMP"])
+
+    candidates.append(f"/tmp/{prefix}-{os.getpid()}")
+
+    for path in candidates:
+        if path:
+            p = pathlib.Path(path)
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+                if os.access(p, os.W_OK):
+                    # cleanup on exit
+                    atexit.register(lambda: shutil.rmtree(p, ignore_errors=True))
+                    return p
+            except Exception:
+                continue
+
+    raise RuntimeError("Could not create a writable temporary directory")

@@ -2,16 +2,22 @@
   "bam":
   {
     "mm_rate_max": 1.0,
+    "pre_match_frac": 0.001,
+    "pre_mismatch_frac": 1.0,
     "factor": 1.0,
+    "normalize_read_depth": true,
+    "recurrent_noise_vaf": 0.01,
     "context_flank": 5,
     "min_len": 0,
     "max_len": 299,
     "min_base_quality": 30,
     "min_mapq": 40,
     "max_nm": 2,
+    "bin_size_bp": 10,
     "pre_sample_seed": 0,
     "n_match_sample": 0,
-    "extract_type": "mismatch",
-    "use_paired_reads": true
+    "mutation_types": ["mismatch", "indel"],
+    "use_paired_reads": true,
+    "chunk_size": 50000
   }
 }
