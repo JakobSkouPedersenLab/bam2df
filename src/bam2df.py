@@ -19,6 +19,8 @@ from src.utility.io import (load_bed, load_table, load_snp_blacklist, load_lowpo
                             load_problematic_blacklist, prepare_blacklist_arrays, split_by_chr)
 from src.utility.sample import get_patient_id
 
+n_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Process a single BAM file into model-ready data.")
 
@@ -161,28 +163,36 @@ def main():
         print("[INFO] No mutation file provided, continuing without mutation index.")
         
     # Optional chromatin
-    chromatin_path = Path(args.chromatin_path)
-    if chromatin_path is not None:
-        chromatin_resources = load_chromatin_resources(chromatin_path, modalities=("ATAC", "DNase"))
-        
-    # Optional coverage
-    bw_handle = None
-    if args.coverage_path and os.path.exists(args.coverage_path):
-        try:
-            bw_handle = pyBigWig.open(args.coverage_path)
-        except Exception as e:
-            print(f"[WARN] Failed to open coverage bigWig: {e}", flush=True) 
+    chromatin_resources = None
+    if args.chromatin_path:
+        chromatin_path = Path(args.chromatin_path)
+        if chromatin_path.exists():
+            chromatin_resources = load_chromatin_resources(
+                chromatin_path, modalities=("ATAC", "DNase")
+            )
             
+    # Optional coverage
+    coverage_path = None
+    if args.coverage_path and Path(args.coverage_path).exists():
+        coverage_path = Path(args.coverage_path)
+
     # Optional replication timing
-    replication_path = args.replication_path if args.replication_path and os.path.exists(args.replication_path) else None
+    replication_path = None
+    if args.replication_path and Path(args.replication_path).exists():
+        replication_path = Path(args.replication_path)
 
     # Optional filters
     patient_id = get_patient_id(args.bam_path)
     filters = load_blacklists(args, patient_id)
 
-    processor = BamProcessor(cfg=bam_config, reference_path=args.reference_path,
-                             verbose=args.verbose, filters=filters,
-                             coverage_bw=bw_handle)
+    processor = BamProcessor(cfg=bam_config,
+                             reference_path=args.reference_path,
+                             verbose=args.verbose,
+                             filters=filters,
+                             coverage_path=coverage_path,
+                             replication_path=replication_path,
+                             chromatin=chromatin_resources,
+                             n_workers=n_workers)
     df_data, df_info = processor.extract_data(args.bam_path)
 
     if df_data.is_empty():
