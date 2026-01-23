@@ -1,12 +1,6 @@
 {
   "bam":
   {
-    "mm_rate_max": 1.0,
-    "pre_match_frac": 0.001,
-    "pre_mismatch_frac": 1.0,
-    "factor": 1.0,
-    "normalize_read_depth": true,
-    "recurrent_noise_vaf": 0.01,
     "context_flank": 5,
     "min_len": 0,
     "max_len": 299,

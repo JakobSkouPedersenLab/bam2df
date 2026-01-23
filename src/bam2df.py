@@ -10,7 +10,6 @@ import pickle
 
 from scipy.sparse import csr_matrix, load_npz
 
-from src.features.feature_extractor import ReadFeatureExtractor
 from src.features.labeling import add_tumor_mutation_labels
 from src.utility.data import ChromatinResources, FilterContext
 from src.utility.sample import get_sample_id
@@ -34,6 +33,8 @@ def parse_args():
     parser.add_argument("--lowpower_blacklist_path", type=str, default=None)
     parser.add_argument("--problematic_blacklist_path", type=str, default=None)
     parser.add_argument("--coverage_path", type=str, default=None)
+    parser.add_argument("--chromatin_path", type=str, default=None)
+    parser.add_argument("--replication_path", type=str, default=None)
     
     parser.add_argument("--output_dir", type=str, default="./data")
     parser.add_argument("--verbose", action="store_true")

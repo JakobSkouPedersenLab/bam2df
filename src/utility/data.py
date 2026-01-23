@@ -6,16 +6,15 @@ import os
 import pathlib
 import re
 import shutil
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import pysam
+import scipy as sp
 import os
-import gzip
-import pandas as pd
-from scipy.sparse import csr_matrix
 
 from src.utility.sample import get_patient_id, get_sample_id
+from scipy.sparse import csr_matrix
 
 # Caching setup: dictionary to store coverage arrays for regions
 coverage_cache: dict[tuple[str, int], list[int]] = ({})  # Key: (contig, segment_start); Value: coverage array for that segment
@@ -26,6 +25,7 @@ bamfile_cache = {}  # Cache for opened BAM files
 
 from dataclasses import dataclass, field
 import polars as pl
+from pathlib import Path
 
 @dataclass
 class ChromStats:
@@ -86,8 +86,14 @@ class ReadFeatureRow:
     qname: str
     chr: str
     genomic_pos: int
-    obs: str
-    ref: str
+
+    obs_type: str
+    obs_base: str
+    obs_ref: str
+    obs_alt_len: int
+    obs_ref_len: int
+    len_delta: int
+
     strand: str
     first_in_pair: int
     read_index: int
@@ -95,11 +101,9 @@ class ReadFeatureRow:
     seq_length: int
 
     # Context
-    ctx_minus1: str
-    ctx_plus1: str
     trinucleotide_ctx: str
-    start_context: str
-    end_context: str
+    start_ctx: str
+    end_ctx: str
     reference_ctx: str
     local_gc: float
     local_complexity_1: float
@@ -107,7 +111,7 @@ class ReadFeatureRow:
 
     # Error / alignment feature
     n_other_err: int
-    
+
     # Per-position features
     base_qual_site: int
     dist_to_end: int
@@ -115,6 +119,9 @@ class ReadFeatureRow:
 
     # Coverage
     read_depth: int
+
+    # Replication
+    replication_timing: float
 
 @dataclass
 class FilterContext:
@@ -129,6 +136,20 @@ class FilterContext:
 @dataclass(frozen=True)
 class ChromatinResources:
     consensus_masks: Dict[str, Dict[str, csr_matrix]]
+    
+@dataclass(frozen=True)
+class ChromosomeTask:
+    chrom: str
+    bam_path: str
+    fasta_path: str
+    mutation_types: list[str]
+    bed_intervals: list | None
+    config: dict
+    chromatin: ChromatinResources | None
+    coverage_bw: Any
+    replication_bw: Any
+    filters: FilterContext | None
+    tmp_dir: pathlib.Path
 
 class ReferenceCache:
     """Fetch reference chunks and keep a sliding window cache per contig."""
@@ -357,6 +378,7 @@ def trim_umi_for_clips(cd, ce, start_clip, end_clip):
     ce = ce[start_clip : (length_ce - end_clip)]
     return cd, ce
 
+
 def trim_sequence_for_clips(sequence, start_clip, end_clip):
     """Trim soft/hard clipped bases from the read sequence at the start/end."""
     if not sequence:
@@ -365,6 +387,7 @@ def trim_sequence_for_clips(sequence, start_clip, end_clip):
     if seq_len < (start_clip + end_clip):
         return ""
     return sequence[start_clip : seq_len - end_clip]
+
 
 def remove_leading_trailing_clips(cigar_string: str, clip_op="SH") -> str:
     """
@@ -386,6 +409,7 @@ def remove_leading_trailing_clips(cigar_string: str, clip_op="SH") -> str:
     cigar_string = re.sub(trailing_pattern, "", cigar_string)
 
     return cigar_string
+
 
 def read_filters(
     read: pysam.AlignedSegment,
@@ -551,111 +575,6 @@ def get_read_depth_from_read(
 
     idx = position - segment_start
     return segment_depth[idx] if 0 <= idx < len(segment_depth) else 0
-    
-# Concatenate all mutation DataFrames
-def process_mutations(mutations_df):
-    """
-    Take the original DataFrame with columns ['chr', 'genomic_pos', 'ref', 'alt', 'sitemut']
-    and break multi-base substitutions into multiple single-base changes.
-    Also handle (pure) insertions and (pure) deletions with the existing prefix/suffix logic.
-    """
-    output_rows = []
-    for idx, row in mutations_df.iterrows():
-        chrom = row['chr']
-        pos_str = row['genomic_pos']
-        ref = row['ref']
-        alt = row['alt']
-        sample_id = row['sample_id']
-        try:
-            pos = int(pos_str)
-        except ValueError:
-            pos = int(float(pos_str))
-        if ref == alt:
-            output_rows.append([chrom, str(pos), ref, alt, sample_id])
-            continue
-        # Longest common prefix
-        prefix_len = 0
-        for (r, a) in zip(ref, alt):
-            if r == a:
-                prefix_len += 1
-            else:
-                break
-        ref_remain = ref[prefix_len:]
-        alt_remain = alt[prefix_len:]
-        pos += prefix_len
-        # Longest common suffix
-        suffix_len = 0
-        ref_remain_rev = ref_remain[::-1]
-        alt_remain_rev = alt_remain[::-1]
-        for (r, a) in zip(ref_remain_rev, alt_remain_rev):
-            if r == a:
-                suffix_len += 1
-            else:
-                break
-        if suffix_len > 0:
-            ref_core = ref_remain[:-suffix_len] if suffix_len < len(ref_remain) else ''
-            alt_core = alt_remain[:-suffix_len] if suffix_len < len(alt_remain) else ''
-        else:
-            ref_core = ref_remain
-            alt_core = alt_remain
-        if len(ref_core) == 0 and len(alt_core) == 0:
-            output_rows.append([chrom, str(pos - prefix_len), ref, alt])
-        elif len(ref_core) > len(alt_core):
-            new_ref = ref_core[0]
-            new_alt = 'D'
-            output_rows.append([chrom, str(pos), new_ref, new_alt, sample_id])
-        elif len(alt_core) > len(ref_core):
-            new_ref = ref_core if ref_core else ref[prefix_len:prefix_len+1]
-            new_alt = 'I'
-            output_rows.append([chrom, str(pos), new_ref, new_alt, sample_id])
-        else:
-            if len(ref_core) == 1:
-                output_rows.append([chrom, str(pos), ref_core, alt_core, sample_id])
-            else:
-                for i in range(len(ref_core)):
-                    if ref_core[i] != alt_core[i]:
-                        output_rows.append([
-                            chrom,
-                            str(pos + i),
-                            ref_core[i],
-                            alt_core[i],
-                            sample_id
-                        ])
-    new_df = pd.DataFrame(output_rows, columns=['chr', 'genomic_pos', 'ref', 'alt', 'sample_id'])
-    return new_df
-
-def process_vcf(vcf_path):
-    # Extract sample_id from the path
-    patient_id = get_patient_id(vcf_path)
-
-    # Count the number of header lines
-    with gzip.open(vcf_path, 'rt') as f:
-        header_lines = 0
-        for line in f:
-            if line.startswith('#'):
-                header_lines += 1
-            else:
-                break
-
-    # Read the VCF as a DataFrame, skipping the header lines
-    vcf_df = pd.read_csv(vcf_path, sep='\t', comment='#', header=None, skiprows=header_lines)
-
-    # Get column names from the last header line
-    with gzip.open(vcf_path, 'rt') as f:
-        for line in f:
-            if line.startswith('#CHROM'):
-                columns = line.strip().lstrip('#').split('\t')
-                break
-    vcf_df.columns = columns
-
-    # Keep only the columns: CHROM, POS, REF, ALT and rename them
-    vcf_df = vcf_df[['CHROM', 'POS', 'REF', 'ALT']]
-    vcf_df = vcf_df.rename(columns={'CHROM': 'chr', 'POS': 'genomic_pos', 'REF': 'ref', 'ALT': 'obs'})
-
-    # Add the sample_id column
-    vcf_df['patient_id'] = patient_id
-
-    return vcf_df
 
 def rows_to_polars(rows, schema=None):
     n = len(rows)

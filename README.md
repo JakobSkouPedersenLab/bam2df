@@ -40,6 +40,9 @@ python ./src/bam2df.py \
     --lowpower_blacklist_path /path/to/lowpower.bg \
     --problematic_blacklist_path /path/to/problematic_folder/ \
     --coverage_path /path/to/coverage.bw \
+    --chromatin_path /path/to/chromatin_features.bw \
+    --replication_path /path/to/replication_timing.bw \
+    --output_dir ./data \
     --verbose
 ```
 
@@ -55,6 +58,9 @@ python ./src/bam2df.py \
 - **--lowpower_blacklist_path** *(optional)*: Regions with insufficient coverage.
 - **--problematic_blacklist_path** *(optional)*: Directory containing additional region filters.
 - **--coverage_path** *(optional)*: bigWig file with per-base coverage.
+- **--chromatin_path** *(optional)*: Chromatin accessibility track (eg, bigWig).
+- **--replication_path** *(optional)*: Replication timing track (eg, bigWig).
+- **--output_dir**: Output directory for generated data (default: `./data`).
 - **--verbose**: Enables detailed logging.
 
 ### Output
@@ -82,30 +88,34 @@ Each row in the output parquet file corresponds to a single read position and co
 
 | Field | Description |
 |-------|-------------|
-| qname | Read name |
+| qname | Read name (query name) |
 | chr | Chromosome |
-| genomic_pos | Genomic position |
-| obs | Observed base |
-| ref | Reference base |
-| strand | Read strand |
-| first_in_pair | 1 if first read in pair |
+| genomic_pos | genomic coordinate |
+| obs_type | Observation type (eg, `S` for `SNV`) |
+| obs_base | Observed base(s) in read |
+| obs_ref | Reference base(s) |
+| obs_alt_len | Length of alternate allele |
+| obs_ref_len | Length of reference allele |
+| len_delta | Length difference (`obs_alt_len - obs_ref_len`) |
+| strand | Read strand (`+` or `-`) |
+| first_in_pair | 1 if first read in pair, 0 otherwise |
 | read_index | Base index within the read |
-| fragment_len | Fragment length |
+| fragment_len | Inferred fragment length |
 | seq_length | Total read length |
-| ctx_minus1 | Upstream base |
-| ctx_plus1 | Downstream base |
-| trinucleotide_ctx | 3-bp context around base |
-| start_context | 5-bp context at read start |
-| end_context | 5-bp context at read end |
-| reference_ctx | Reference 5-bp context |
-| local_gc | Local GC fraction |
+| trinucleotide_ctx | 3-bp reference context centered on position |
+| start_ctx | 5-bp reference context at read start |
+| end_ctx | 5-bp reference context at read end |
+| reference_ctx | 5-bp reference context centered on position |
+| local_gc | Local GC fraction in surrounding window |
 | local_complexity_1 | Local sequence complexity (metric 1) |
 | local_complexity_2 | Local sequence complexity (metric 2) |
-| n_other_err | Other read errors (non-mismatch) |
-| base_qual_site | Base quality |
-| dist_to_end | Distance to nearest read end |
-| homopolymer_run_len | Length of homopolymer run |
-| read_depth | Coverage at position |
+| n_other_err | Number of other alignment errors in read |
+| base_qual_site | Base quality at position (Phred) |
+| dist_to_end | Distance to nearest read end (bp) |
+| homopolymer_run_len | Length of homopolymer run at position |
+| read_depth | Read depth (coverage) at genomic position |
+| replication_timing | Replication timing value at genomic position |
+
 
 ## Configuration
 
@@ -116,29 +126,35 @@ Example:
 ```json
 {
   "bam": {
-    "mm_rate_max": 1.0,
-    "factor": 1.0,
     "context_flank": 5,
     "min_len": 0,
     "max_len": 299,
     "min_base_quality": 30,
     "min_mapq": 40,
     "max_nm": 2,
+    "bin_size_bp": 10,
     "pre_sample_seed": 0,
     "n_match_sample": 0,
-    "extract_type": "mismatch",
-    "use_paired_reads": true
+    "mutation_types": ["mismatch", "indel"],
+    "use_paired_reads": true,
+    "chunk_size": 50000
   }
 }
 ```
 
 ### Key fields
 
-- **extract_type**: "mismatch" for mismatch extraction
-- **min_base_quality / min_mapq**:  read-level quality thresholds
-- **max_nm**: maximum edit distance (mismathes) allowed
-- **use_paired_reads**: whether to only sample in overlapping regions
-- **n_match_sample**: sample a subset of matching bases (0 = all)
+- **context_flank**: Number of flanking bases to include on each side of the variant position.
+- **min_len / max_len**: Minimum and maximum read length allowed.
+- **min_base_quality**: Minimum base quality (Phred) required at the variant position.
+- **min_mapq**: Minimum read mapping quality required.
+- **max_nm**: Maximum edit distance (number of mismatches/indels) allowed per read.
+- **bin_size_bp**: Bin size (in base pairs) used for genomic binning or aggregation.
+- **pre_sample_seed**: Random seed used for deterministic subsampling.
+- **n_match_sample**: Number of matching (reference) bases to subsample (0 = keep all).
+- **mutation_types**: Which mutation classes to extract (eg, `mismatch`, `indel`).
+- **use_paired_reads**: If true, only sample bases from overlapping regions of paired-end reads.
+- **chunk_size**: Number of reads processed per chunk for streaming and memory control.
 
 ## Contributions
 
