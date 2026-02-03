@@ -163,13 +163,11 @@ def main():
         print("[INFO] No mutation file provided, continuing without mutation index.")
         
     # Optional chromatin
-    chromatin_resources = None
-    if args.chromatin_path:
-        chromatin_path = Path(args.chromatin_path)
-        if chromatin_path.exists():
-            chromatin_resources = load_chromatin_resources(
-                chromatin_path, modalities=("ATAC", "DNase")
-            )
+    chromatin_path = args.chromatin_path if args.chromatin_path and os.path.exists(args.chromatin_path) else None
+    if chromatin_path is not None:
+        chromatin_resources = load_chromatin_resources(chromatin_path, modalities=("ATAC", "DNase"))
+    else:
+        chromatin_resources = None
             
     # Optional coverage
     coverage_path = None
