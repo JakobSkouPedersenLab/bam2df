@@ -45,44 +45,12 @@ class BamProcessor:
                                             chromatin_path=self.chromatin_path,
                                             n_workers=self.n_workers)
 
-        patient_id = get_patient_id(bam_path)
-        sample_id = get_sample_id(bam_path)
-
         bed_path = self.cfg.get("bed_file")
         mutation_types = self.cfg.get("mutation_types")
         
-        # Exctract data
-        lf, stats = self._extract_df(
-            chr_processor=chr_processor,
-            bam_path=bam_path,
-            mutation_types=mutation_types,
-            patient_id=patient_id,
-            sample_id=sample_id,
-            bed_path=bed_path,
-        )
+        if not mutation_types:
+            raise ValueError("cfg['mutation_types'] is missing or empty")
         
-        # Collect stats
-        total_stats = ChromStats()
-        total_stats += stats.total
-        info = self.summarize_info(total_stats)
-        
-        if self.verbose:
-            print(f"[BamProcessor:INFO] Completed BAM: {bam_path}", flush=True)
-
-        return lf, info
-
-    def _extract_df(self,
-                    chr_processor: ChromosomeProcessor,
-                    bam_path: str,
-                    mutation_types: list[str],
-                    patient_id: str,
-                    sample_id: str,
-                    bed_path: str,
-                    **kwargs) -> Tuple[pl.LazyFrame, Optional[ChromStats]]:
-        """
-        Extracts one type (mismatch/match/indel), attaches patient/sample IDs,
-        and returns (df, stats). Returns (empty_df, None) if extraction yields nothing.
-        """
         lf, genome_stats = chr_processor.process(
             bam_path=bam_path,
             reference_path=self.reference_path,
@@ -90,13 +58,24 @@ class BamProcessor:
             bed_path=bed_path,
         )
         
+        if lf is None:
+            raise RuntimeError("No data extracted")
+                
         # Attach ids lazily
+        patient_id = get_patient_id(bam_path)
+        sample_id = get_sample_id(bam_path)
         lf = lf.with_columns([
             pl.lit(patient_id).alias("patient_id"),
             pl.lit(sample_id).alias("sample_id"),
         ])
+      
+        # Collect stats
+        info = self.summarize_info(genome_stats.total)
+        
+        if self.verbose:
+            print(f"[BamProcessor:INFO] Completed BAM: {bam_path}", flush=True)
 
-        return lf, genome_stats
+        return lf, info
 
     @staticmethod
     def summarize_info(stats: ChromStats) -> pl.DataFrame:
