@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--chromatin_path", type=str, default=None)
     parser.add_argument("--replication_path", type=str, default=None)
     
-    parser.add_argument("--output_file", type=str, default="./data/output.parquet")
+    parser.add_argument("--output_file", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
 
     return parser.parse_args()
@@ -169,7 +169,13 @@ def main():
     lf_data = add_tumor_mutation_labels(lf_data, mutation_file)
 
     # Write parquet file
-    output_file = args.output_file
+    sample_id = get_sample_id(args.bam_path)
+    if args.output_file:
+        output_file = Path(args.output_file).resolve()
+    else:
+        output_file = Path(f"{sample_id}.parquet").resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    
     lf_data.sink_parquet(output_file, compression="zstd")
 
     if args.verbose:

@@ -1,9 +1,9 @@
 # bam2df
 A lightweight command-line tool that converts BAM files into model-ready feature tables.  
-It extracts per-base or per-mismatch features, applies blacklist filters, integrates mutation and coverage data, and outputs:
+It extracts matches/mismatches/indels along the genome, applies blacklist filters, integrates mutation and coverage data, and outputs:
 
-- `<sample_id>.parquet` — main feature table  
-- `<sample_id>_metadata.csv` — metadata for the processed BAM  
+- `<sample_id>.parquet` — main feature table as Polars DataFrame
+- `<sample_id>_metadata.csv` — metadata for the processed file
 
 All output paths are configurable, and the tool is optimized for large-scale genomics pipelines.
 
@@ -48,7 +48,6 @@ python ./src/bam2df.py \
     --coverage_path /path/to/coverage.bw \
     --chromatin_path /path/to/chromatin_features.bw \
     --replication_path /path/to/replication_timing.bw \
-    --output_dir ./data \
     --verbose
 ```
 
