@@ -1,31 +1,44 @@
 import pickle
+from typing import Optional, Sequence, Tuple, Union
 import polars as pl
 from pathlib import Path
 from collections import defaultdict
 
-def add_tumor_mutation_labels(df: pl.DataFrame, mutation_file) -> pl.DataFrame:
-    patient_id = df["patient_id"][0]
-    
-    if mutation_file is None or len(mutation_file) == 0:
-        return df.with_columns(pl.lit(0).cast(pl.Int8).alias("tumor_mut_present"))
+def add_tumor_mutation_labels(
+    df: Union[pl.DataFrame, pl.LazyFrame],
+    mutation_file: Optional[Sequence[Tuple[str, int, str, str]]],
+) -> pl.LazyFrame:
+    """
+    Add tumor_mut_present (Int8 0/1) by joining on (chr, genomic_pos, obs_ref, obs_base).
+    Works on DataFrame or LazyFrame; returns LazyFrame.
+    """
+    lf = df.lazy() if isinstance(df, pl.DataFrame) else df
 
-    # Build dict-of-sets by chromosome for faster lookup
-    tumor_dict = defaultdict(set)
+    if not mutation_file:
+        return lf.with_columns(pl.lit(0).cast(pl.Int8).alias("tumor_mut_present"))
+
+    # ensure we have a list of 4-tuples
+    rows = []
     for entry in mutation_file:
-        # Validate
         if not isinstance(entry, (tuple, list)) or len(entry) != 4:
-            print(f"[WARN] Bad mutation entry for {patient_id}: {entry}", flush=True)
             continue
-
         chr_, pos, ref, obs = entry
-        tumor_dict[chr_].add((pos, ref, obs))
+        rows.append((chr_, pos, ref, obs))
 
-    # Create labels by membership testing
-    labels = []
-    for chr_, pos, ref, obs in zip(df["chr"], df["genomic_pos"], df["obs_ref"], df["obs_base"]):
-        is_tumor = (pos, ref, obs) in tumor_dict[chr_]
-        labels.append(int(is_tumor))
+    if not rows:
+        return lf.with_columns(pl.lit(0).cast(pl.Int8).alias("tumor_mut_present"))
 
-    return df.with_columns(
-        pl.Series("tumor_mut_present", labels).cast(pl.Int8)
+    mut_df = pl.DataFrame(
+        rows,
+        schema=["chr", "genomic_pos", "obs_ref", "obs_base"],
+        orient="row",
+    ).unique()
+
+    mut_lf = mut_df.lazy().with_columns(
+        pl.lit(1).cast(pl.Int8).alias("tumor_mut_present")
+    )
+
+    return (
+        lf.join(mut_lf, on=["chr", "genomic_pos", "obs_ref", "obs_base"], how="left")
+          .with_columns(pl.col("tumor_mut_present").fill_null(0).cast(pl.Int8))
     )

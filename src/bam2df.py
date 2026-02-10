@@ -11,7 +11,7 @@ import pickle
 from scipy.sparse import csr_matrix, load_npz
 
 from src.features.labeling import add_tumor_mutation_labels
-from src.utility.data import ChromatinResources, FilterContext
+from src.utility.data import FilterContext
 from src.utility.sample import get_sample_id
 from src.features.bam_processor import BamProcessor
 
@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--chromatin_path", type=str, default=None)
     parser.add_argument("--replication_path", type=str, default=None)
     
-    parser.add_argument("--output_dir", type=str, default="./data")
+    parser.add_argument("--output_file", type=str, default="./data/output.parquet")
     parser.add_argument("--verbose", action="store_true")
 
     return parser.parse_args()
@@ -85,34 +85,6 @@ def load_blacklists(args, patient_id: str):
         donor_blacklist_by_chr=donor_by_chr,
         patient_blacklists_by_chr=patient_blacklists_by_chr,
     )
-    
-def load_chromatin_resources(root: Path, modalities: tuple[str]) -> ChromatinResources:
-    consensus_masks: dict[str, dict[str, csr_matrix]] = {}
-
-    for modality in modalities:
-        masks_dir = (
-            root
-            / "chromatin_masks"
-            / modality
-            / "sparse_overlaps_by_chromosome"
-            / "consensus"
-        )
-
-        if not masks_dir.exists():
-            raise FileNotFoundError(f"Consensus masks dir not found: {masks_dir}")
-
-        by_chr: dict[str, csr_matrix] = {}
-
-        for path in masks_dir.glob("*.npz"):
-            chrom = path.stem
-            by_chr[chrom] = load_npz(path).tocsr()
-
-        if not by_chr:
-            raise RuntimeError(f"No consensus NPZ files found in {masks_dir}")
-
-        consensus_masks[modality] = by_chr
-
-    return ChromatinResources(consensus_masks=consensus_masks)
 
 def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
     """
@@ -141,11 +113,7 @@ def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
 
 def main():
     args = parse_args()
-
-    # Ensure output directory exists
-    output_dir = Path(args.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    
     # Load config
     with open(args.config_path) as f:
         cfg = json.load(f)
@@ -163,21 +131,25 @@ def main():
         print("[INFO] No mutation file provided, continuing without mutation index.")
         
     # Optional chromatin
-    chromatin_path = args.chromatin_path if args.chromatin_path and os.path.exists(args.chromatin_path) else None
-    if chromatin_path is not None:
-        chromatin_resources = load_chromatin_resources(chromatin_path, modalities=("ATAC", "DNase"))
-    else:
-        chromatin_resources = None
-            
+    chromatin_path = (
+        str(Path(args.chromatin_path).resolve())
+        if args.chromatin_path and Path(args.chromatin_path).exists()
+        else None
+    )
+
     # Optional coverage
-    coverage_path = None
-    if args.coverage_path and Path(args.coverage_path).exists():
-        coverage_path = Path(args.coverage_path)
+    coverage_path = (
+        str(Path(args.coverage_path).resolve())
+        if args.coverage_path and Path(args.coverage_path).exists()
+        else None
+    )
 
     # Optional replication timing
-    replication_path = None
-    if args.replication_path and Path(args.replication_path).exists():
-        replication_path = Path(args.replication_path)
+    replication_path = (
+        str(Path(args.replication_path).resolve())
+        if args.replication_path and Path(args.replication_path).exists()
+        else None
+    )
 
     # Optional filters
     patient_id = get_patient_id(args.bam_path)
@@ -189,29 +161,20 @@ def main():
                              filters=filters,
                              coverage_path=coverage_path,
                              replication_path=replication_path,
-                             chromatin=chromatin_resources,
+                             chromatin_path=chromatin_path,
                              n_workers=n_workers)
-    df_data, df_info = processor.extract_data(args.bam_path)
-
-    if df_data.is_empty():
-        print("[ERROR] No data extracted; exiting.", flush=True)
-        return
-
-    # Add tumor mutation labels
-    extract_type = bam_config['extract_type']
-    if extract_type == "mismatch":
-        df_data = add_tumor_mutation_labels(df_data, mutation_file)
-
-    # Build output filename based on sample id
-    sample_id = get_sample_id(args.bam_path)
-    output_file = output_dir / f"{sample_id}.parquet"
+    lf_data, df_info = processor.extract_data(args.bam_path)
     
-    # Write parquet
-    df_data.write_parquet(output_file)
+    # Add tumor mutation labels
+    lf_data = add_tumor_mutation_labels(lf_data, mutation_file)
+
+    # Write parquet file
+    output_file = args.output_file
+    lf_data.sink_parquet(output_file, compression="zstd")
 
     if args.verbose:
-        print(f"[INFO] Wrote {df_data.height:,} rows -> {output_file}", flush=True)
-
+        print(f"[INFO] Completed extraction -> {output_file}", flush=True)
+        
     # Metadata CSV beside parquet file
     meta_path = write_metadata_per_file(df_info, output_file)
 

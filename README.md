@@ -17,10 +17,16 @@ conda create -n bam2df python=3.12
 conda activate bam2df
 ```
 
-## 2 Install Poetry (inside the environment)
+## 2 Install Poetry
 ```bash
 pip install poetry
 poetry install
+```
+
+## 3 Install gwf (if needed)
+```bash
+conda config --add channels gwforg
+conda install gwf
 ```
 
 ## How to use
@@ -60,7 +66,7 @@ python ./src/bam2df.py \
 - **--coverage_path** *(optional)*: bigWig file with per-base coverage.
 - **--chromatin_path** *(optional)*: Chromatin accessibility track (eg, bigWig).
 - **--replication_path** *(optional)*: Replication timing track (eg, bigWig).
-- **--output_dir**: Output directory for generated data (default: `./data`).
+- **--output_file**: Output file for generated data (default: `./data/output.parquet`).
 - **--verbose**: Enables detailed logging.
 
 ### Output
@@ -73,13 +79,13 @@ By default, outputs are written to:
 with the following structure:
 ```bash
 data/
-  <sample_id>.parquet
-  <sample_id>_metadata.csv
+  output.parquet
+  output_metadata.csv
 ```
 
 You can customize the output location via:
 ```bash
---output_dir /desired/output/path
+--output_file /desired/output/file.parquet
 ```
 
 ### Extracted Features
@@ -115,6 +121,33 @@ Each row in the output parquet file corresponds to a single read position and co
 | homopolymer_run_len | Length of homopolymer run at position |
 | read_depth | Read depth (coverage) at genomic position |
 | replication_timing | Replication timing value at genomic position |
+
+## Using a mutation catalog for labeling
+
+The pipeline optionally supports **labeling read-level mismatches** using an external mutation catalog (for example, somatic mutations from a VCF). This is useful if you want to distinguish mismatches that correspond to known tumor mutations from background sequencing or alignment errors.
+
+### What the mutation catalog is used for
+
+If a mutation catalog is provided via `--mutation_path`, the pipeline will:
+
+- Compare each extracted mismatch `(chr, genomic_pos, obs_ref, obs_base)`
+- Assign a binary label:
+  - `tumor_mut_present = 1` if the mismatch matches a known mutation
+  - `tumor_mut_present = 0` otherwise
+
+If no mutation catalog is provided, all rows will be labeled with `tumor_mut_present = 0`.
+
+### Expected format of the mutation catalog
+
+The mutation catalog must be provided as a **Python pickle (`.pkl`) file** containing a sequence of mutation records.
+
+Each record must be a tuple or list of the form:
+
+```text
+(chr, genomic_pos, ref, obs)
+```
+
+See the function src/utility/io.py:process_vcf() for how to create the dataframe.
 
 ## Configuration
 

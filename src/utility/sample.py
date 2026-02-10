@@ -58,9 +58,3 @@ def get_patient_id(path: str) -> str:
         return f"C{m_pat.group(1)}"
 
     return sample_id
-
-def get_patient_sample_id(path: str):
-    """Return both (patient_id, sample_id) for convenience."""
-    patient_id = get_patient_id(path)
-    sample_id = get_sample_id(path)
-    return patient_id, sample_id

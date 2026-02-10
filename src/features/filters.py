@@ -33,6 +33,12 @@ def read_matches_any_type_in_overlap(read, overlap, highqual_overlap, mutation_t
             return True
     return False
 
+def _count_indel_bases(read: pysam.AlignedSegment) -> int:
+    """Total inserted+deleted bases from CIGAR (I+D)."""
+    if read.cigartuples is None:
+        return 0
+    return sum(length for op, length in read.cigartuples if op in (1, 2))
+
 def read_has_indel(read: pysam.AlignedSegment) -> bool:
     if read.cigartuples is None:
         return False
@@ -40,27 +46,51 @@ def read_has_indel(read: pysam.AlignedSegment) -> bool:
 
 def read_has_mismatch(read: pysam.AlignedSegment) -> bool:
     """
-    Coarse check: NM > (#insertions + #deletions)
+    True if the read contains >= 1 substitution mismatch.
+    Uses NM (edit distance) minus indel bases as a coarse proxy.
+
+    Note: NM can include some complexities depending on aligner/settings,
+    but this matches your current "coarse check" intent.
     """
     try:
         nm = read.get_tag("NM")
     except KeyError:
         return False
 
+    indel_bases = _count_indel_bases(read)
+    mismatch_proxy = nm - indel_bases
+    return mismatch_proxy > 0
+
+def read_has_match(read: pysam.AlignedSegment) -> bool:
+    """
+    True if the read contains >= 1 aligned match position.
+
+    Logic: an aligned position is either a match or mismatch.
+    aligned_bases = query_alignment_length - inserted_bases
+    mismatches ≈ NM - indel_bases
+    matches ≈ aligned_bases - mismatches
+    """
+    # No alignment => no match
     if read.cigartuples is None:
-        return nm > 0
-
-    indel_bases = sum(
-        length for op, length in read.cigartuples if op in (1, 2)
-    )
-    
-    return nm > indel_bases
-
-def read_is_perfect_match(read: pysam.AlignedSegment) -> bool:
-    try:
-        return read.get_tag("NM") == 0
-    except KeyError:
         return False
+
+    # Insertions consume query but don't align to reference positions.
+    inserted_bases = sum(length for op, length in read.cigartuples if op == 1)  # I
+    aligned_bases = max(0, read.query_alignment_length - inserted_bases)
+    if aligned_bases == 0:
+        return False
+
+    try:
+        nm = read.get_tag("NM")
+    except KeyError:
+        # If no NM tag, fall back to: any aligned base implies at least one (match or mismatch).
+        # We cannot distinguish; but for "has match" it's safer to keep reads rather than drop.
+        return True
+
+    indel_bases = _count_indel_bases(read)
+    mismatches = max(0, nm - indel_bases)
+    matches = aligned_bases - mismatches
+    return matches > 0
 
 def _high_quality_overlap(read, mate, overlap, min_bq):
     """

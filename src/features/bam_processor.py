@@ -3,7 +3,7 @@ import polars as pl
 
 from src.features.chr_processor import ChromosomeProcessor
 from src.utility.sample import get_patient_id, get_sample_id
-from src.utility.data import ChromStats, ChromatinResources, FilterContext, GenomeStats
+from src.utility.data import ChromStats, FilterContext
 
 import pyBigWig
 
@@ -18,7 +18,7 @@ class BamProcessor:
                  filters: Optional[FilterContext] = None,
                  coverage_path: str = None,
                  replication_path: str = None,
-                 chromatin: ChromatinResources = None,
+                 chromatin_path: str = None,
                  n_workers: int = 1):
         
         self.cfg = cfg
@@ -27,10 +27,10 @@ class BamProcessor:
         self.filters = filters
         self.coverage_path = coverage_path
         self.replication_path = replication_path
-        self.chromatin = chromatin
+        self.chromatin_path = chromatin_path
         self.n_workers = n_workers
 
-    def extract_data(self, bam_path: str) -> Tuple[pl.DataFrame, pl.DataFrame]:
+    def extract_data(self, bam_path: str) -> Tuple[pl.LazyFrame, pl.DataFrame]:
         """
         Extracts, filters, and summarizes data for one BAM file.
         """
@@ -42,7 +42,7 @@ class BamProcessor:
                                             filters=self.filters,
                                             coverage_path=self.coverage_path,
                                             replication_path=self.replication_path,
-                                            chromatin=self.chromatin,
+                                            chromatin_path=self.chromatin_path,
                                             n_workers=self.n_workers)
 
         patient_id = get_patient_id(bam_path)
@@ -52,7 +52,7 @@ class BamProcessor:
         mutation_types = self.cfg.get("mutation_types")
         
         # Exctract data
-        df, stats = self._extract_df(
+        lf, stats = self._extract_df(
             chr_processor=chr_processor,
             bam_path=bam_path,
             mutation_types=mutation_types,
@@ -69,7 +69,7 @@ class BamProcessor:
         if self.verbose:
             print(f"[BamProcessor:INFO] Completed BAM: {bam_path}", flush=True)
 
-        return df, info
+        return lf, info
 
     def _extract_df(self,
                     chr_processor: ChromosomeProcessor,
@@ -78,39 +78,25 @@ class BamProcessor:
                     patient_id: str,
                     sample_id: str,
                     bed_path: str,
-                    **kwargs) -> Tuple[pl.DataFrame, Optional[ChromStats]]:
+                    **kwargs) -> Tuple[pl.LazyFrame, Optional[ChromStats]]:
         """
         Extracts one type (mismatch/match/indel), attaches patient/sample IDs,
         and returns (df, stats). Returns (empty_df, None) if extraction yields nothing.
         """
-        df, genome_stats = chr_processor.process(
+        lf, genome_stats = chr_processor.process(
             bam_path=bam_path,
             reference_path=self.reference_path,
             mutation_types=mutation_types,
             bed_path=bed_path,
         )
         
-        if df.is_empty():
-            if self.verbose:
-                print(f"[BamProcessor:WARN] No {mutation_types} data extracted.", flush=True)
-            return pl.DataFrame(), ChromStats()
+        # Attach ids lazily
+        lf = lf.with_columns([
+            pl.lit(patient_id).alias("patient_id"),
+            pl.lit(sample_id).alias("sample_id"),
+        ])
 
-        n_rows = df.height
-        id_df = pl.DataFrame({
-            "patient_id": [patient_id] * n_rows,
-            "sample_id":  [sample_id] * n_rows,
-        })
-
-        df = pl.concat([df, id_df], how="horizontal")
-        return df, genome_stats
-
-    @staticmethod
-    def combine_mismatches_matches(pos: pl.DataFrame,
-                                   neg: pl.DataFrame | None) -> pl.DataFrame:
-        """Concatenate positive and negative sets (if available)."""
-        if neg is None or neg.is_empty():
-            return pos
-        return pl.concat([pos, neg])
+        return lf, genome_stats
 
     @staticmethod
     def summarize_info(stats: ChromStats) -> pl.DataFrame:
