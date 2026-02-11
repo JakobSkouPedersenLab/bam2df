@@ -108,8 +108,8 @@ Each row in the output parquet file corresponds to a single read position and co
 | fragment_len | Inferred fragment length |
 | seq_length | Total read length |
 | trinucleotide_ctx | 3-bp reference context centered on position |
-| start_ctx | 5-bp reference context at read start |
-| end_ctx | 5-bp reference context at read end |
+| start_ctx | 5-bp query context at fragment start |
+| end_ctx | 5-bp query context at fragment end |
 | reference_ctx | 5-bp reference context centered on position |
 | local_gc | Local GC fraction in surrounding window |
 | local_complexity_1 | Local sequence complexity (metric 1) |
