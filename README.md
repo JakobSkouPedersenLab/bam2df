@@ -45,7 +45,6 @@ python ./src/bam2df.py \
     --snp_blacklist_path /path/to/snps.tsv \
     --lowpower_blacklist_path /path/to/lowpower.bg \
     --problematic_blacklist_path /path/to/problematic_folder/ \
-    --coverage_path /path/to/coverage.bw \
     --chromatin_path /path/to/chromatin_features.bw \
     --replication_path /path/to/replication_timing.bw \
     --verbose
@@ -62,7 +61,6 @@ python ./src/bam2df.py \
 - **--snp_blacklist_path** *(optional)*: SNP calls to exclude.
 - **--lowpower_blacklist_path** *(optional)*: Regions with insufficient coverage.
 - **--problematic_blacklist_path** *(optional)*: Directory containing additional region filters.
-- **--coverage_path** *(optional)*: bigWig file with per-base coverage.
 - **--chromatin_path** *(optional)*: Chromatin accessibility track (eg, bigWig).
 - **--replication_path** *(optional)*: Replication timing track (eg, bigWig).
 - **--output_file**: Output file for generated data (default: `./data/output.parquet`).

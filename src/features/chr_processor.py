@@ -13,7 +13,7 @@ import polars as pl
 import pyBigWig
 import gc
 
-from src.features.read import (_extract_fragment_end_context, _extract_read_end_context, _fragment_is_proper_length,
+from src.features.read import (_calculate_fragment_length, _extract_fragment_end_context, _extract_read_end_context, _fragment_is_proper_length,
                                _paired_overlap, indel_in_overlap, mismatch_in_overlap, match_in_overlap)
 from src.features.chromatin import extract_chromatin_features
 from src.features.filters import (_high_quality_overlap, _high_quality_single_read, _load_bed, _read_filters, _make_interval_lookup,
@@ -37,7 +37,6 @@ def process_chromosome(
     verbose: bool,
     bed_intervals: list | None,
     filters: FilterContext | None,
-    coverage_bw: pyBigWig.pyBigWig | None,
     replication_bw: pyBigWig.pyBigWig | None
 ) -> Optional[tuple[list[dict], ChromStats]]:
     """
@@ -180,7 +179,8 @@ def process_chromosome(
                                                     mutation_types, overlap_predicates):
                 stats.n_skipped += 1
                 continue
-
+            
+            frag_len = _calculate_fragment_length(read1, read2)
             start_ctx, end_ctx = _extract_fragment_end_context(read1, read2, k=ctx_flank)
 
             # driver read: keep as read2
@@ -191,12 +191,12 @@ def process_chromosome(
                 patient_id=patient_id,
                 ref_cache=ref_cache,
                 mutation_types=mutation_types,
+                frag_len=frag_len,
                 context_flank=ctx_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
                 overlap=overlap,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
                 filters=filters,
                 highqual_positions=highqual_overlap,
@@ -228,10 +228,8 @@ def process_chromosome(
                 if len(rows_chunk) >= chunk_size:
                     flush_chunk(schema)
         else:
-            # Calculate high quality positions
             highqual_positions = _high_quality_single_read(read, min_bq)
-            
-            # Calculate read context
+            frag_len = read.template_length
             start_ctx, end_ctx = _extract_read_end_context(read, k=ctx_flank)
             
             # Treat each read independently
@@ -241,12 +239,12 @@ def process_chromosome(
                 patient_id=patient_id,
                 ref_cache=ref_cache,
                 mutation_types=mutation_types,
+                frag_len=frag_len,
                 context_flank=ctx_flank,
                 start_ctx=start_ctx,
                 end_context=end_ctx,                
                 bed_lookup=bed_lookup,
                 overlap=None,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
                 filters=filters,
                 highqual_positions=highqual_positions,
@@ -303,7 +301,6 @@ def _process_chromosome_worker(
     tmp_dir: Path,
     config: dict,
     filters: Optional[FilterContext] = None,
-    coverage_path: str = None,
     replication_path: str = None,
     chromatin_path: str = None,
     verbose: bool = False,
@@ -318,7 +315,6 @@ def _process_chromosome_worker(
     """
     t0 = time.perf_counter()
     
-    coverage_bw = pyBigWig.open(coverage_path) if coverage_path else None
     replication_bw = pyBigWig.open(replication_path) if replication_path else None
 
     with pysam.AlignmentFile(bam_path, "rb") as bam:
@@ -333,13 +329,10 @@ def _process_chromosome_worker(
                 bed_intervals=bed_intervals,
                 config=config,
                 filters=filters,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
                 verbose=verbose
             )
         finally:
-            if coverage_bw is not None:
-                coverage_bw.close()
             if replication_bw is not None:
                 replication_bw.close()
 
@@ -410,7 +403,6 @@ class ChromosomeProcessor:
                  config: dict,
                  verbose: bool = False,
                  filters: Optional[FilterContext] = None,
-                 coverage_path: str = None,
                  replication_path: str = None,
                  chromatin_path: str = None,
                  n_workers: int = 1):
@@ -418,7 +410,6 @@ class ChromosomeProcessor:
         self.config = config
         self.verbose = verbose
         self.filters = filters
-        self.coverage_path = coverage_path
         self.replication_path = replication_path
         self.chromatin_path = chromatin_path
         self.n_workers = n_workers
@@ -460,7 +451,6 @@ class ChromosomeProcessor:
                         chromatin_path=self.chromatin_path,
                         config=self.config,
                         filters=self.filters,
-                        coverage_path=self.coverage_path,
                         replication_path=self.replication_path,
                         verbose=self.verbose,
                     )

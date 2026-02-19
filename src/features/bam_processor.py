@@ -16,7 +16,6 @@ class BamProcessor:
                  reference_path: str,
                  verbose: bool = False,
                  filters: Optional[FilterContext] = None,
-                 coverage_path: str = None,
                  replication_path: str = None,
                  chromatin_path: str = None,
                  n_workers: int = 1):
@@ -25,7 +24,6 @@ class BamProcessor:
         self.reference_path = reference_path
         self.verbose = verbose
         self.filters = filters
-        self.coverage_path = coverage_path
         self.replication_path = replication_path
         self.chromatin_path = chromatin_path
         self.n_workers = n_workers
@@ -40,7 +38,6 @@ class BamProcessor:
         chr_processor = ChromosomeProcessor(config=self.cfg,
                                             verbose=self.verbose,
                                             filters=self.filters,
-                                            coverage_path=self.coverage_path,
                                             replication_path=self.replication_path,
                                             chromatin_path=self.chromatin_path,
                                             n_workers=self.n_workers)

@@ -34,7 +34,6 @@ def parse_args():
     parser.add_argument("--snp_blacklist_path", type=str, default=None)
     parser.add_argument("--lowpower_blacklist_path", type=str, default=None)
     parser.add_argument("--problematic_blacklist_path", type=str, default=None)
-    parser.add_argument("--coverage_path", type=str, default=None)
     parser.add_argument("--chromatin_path", type=str, default=None)
     parser.add_argument("--replication_path", type=str, default=None)
     
@@ -137,13 +136,6 @@ def main():
         else None
     )
 
-    # Optional coverage
-    coverage_path = (
-        str(Path(args.coverage_path).resolve())
-        if args.coverage_path and Path(args.coverage_path).exists()
-        else None
-    )
-
     # Optional replication timing
     replication_path = (
         str(Path(args.replication_path).resolve())
@@ -159,7 +151,6 @@ def main():
                              reference_path=args.reference_path,
                              verbose=args.verbose,
                              filters=filters,
-                             coverage_path=coverage_path,
                              replication_path=replication_path,
                              chromatin_path=chromatin_path,
                              n_workers=n_workers)

@@ -3,8 +3,8 @@ from gwf import AnonymousTarget
 def make_dataset(bam_file_path, reference_path, config_path, mutation_path=None,
                  genomic_blacklist_file=None, donor_blacklist_file=None,
                  snp_blacklist_path=None, lowpower_blacklist_path=None,
-                 problematic_blacklist_path=None, coverage_path=None,
-                 chromatin_path=None, replication_path=None, output_file=None):
+                 problematic_blacklist_path=None, chromatin_path=None,
+                 replication_path=None, output_file=None):
     """
     Run the per-BAM extraction pipeline and write a single parquet file.
     """
@@ -22,7 +22,6 @@ def make_dataset(bam_file_path, reference_path, config_path, mutation_path=None,
         snp_blacklist_path,
         lowpower_blacklist_path,
         problematic_blacklist_path,
-        coverage_path,
         chromatin_path,
         replication_path
     ]
@@ -53,7 +52,6 @@ def make_dataset(bam_file_path, reference_path, config_path, mutation_path=None,
         --snp_blacklist_path {snp_blacklist_path} \
         --lowpower_blacklist_path {lowpower_blacklist_path} \
         --problematic_blacklist_path {problematic_blacklist_path} \
-        --coverage_path {coverage_path} \
         --chromatin_path {chromatin_path} \
         --replication_path {replication_path} \
         --output_file {output_file} \

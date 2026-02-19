@@ -173,7 +173,6 @@ def _read_filters(read: pysam.AlignedSegment,
         or read.is_duplicate
         or read.is_qcfail
         or not read.is_paired
-        or not read.is_proper_pair
     ):
         return False
     

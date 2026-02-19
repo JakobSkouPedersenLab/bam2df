@@ -89,6 +89,26 @@ def _extract_read_end_context(read, k: int = 5):
 
     return start_context, end_context
 
+def _calculate_fragment_length(read1: pysam.AlignedSegment,
+                               read2: pysam.AlignedSegment) -> bool:
+    """
+    Calculate fragment length
+    """    
+    if read1.reference_id != read2.reference_id:
+        return False
+    
+    if read1.is_reverse == read2.is_reverse:
+        return False
+    
+    if read1.is_reverse:
+        fwd, rev = read2, read1
+    else:
+        fwd, rev = read1, read2
+    
+    frag_len = rev.reference_end - fwd.reference_start
+    
+    return frag_len
+
 def _extract_fragment_end_context(read, mate, k: int = 5):
     """
     Extract the first k bases of the fragment (start_context)
@@ -454,7 +474,6 @@ def _build_read_row(
     end_ctx: str,
     other_err: int = 0,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
-    coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None
 ) -> Optional[Dict[str, Any]]:
     """Per-base feature extraction."""
@@ -475,14 +494,7 @@ def _build_read_row(
     n_other_err = other_err - (1 if obs_type == "S" else 0)
 
     # Coverage
-    if coverage_bw is not None:
-        cov = coverage_bw.values(chrom, pos_1based - 1, pos_1based)
-        if cov and cov[0] is not None and not math.isnan(cov[0]):
-            read_depth = int(round(cov[0]))
-        else:
-            read_depth = 0
-    else:
-        read_depth = get_read_depth(bam_path, chrom, pos_1based - 1)
+    read_depth = get_read_depth(bam_path, chrom, pos_1based - 1)
         
     # Replication timing
     replication_timing = None

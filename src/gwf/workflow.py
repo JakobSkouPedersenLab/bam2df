@@ -48,7 +48,6 @@ donor_blacklist_file = params["c2i"]["donor_blacklist_file"]
 snp_blacklist_path = params["c2i"]["snp_blacklist_path"]
 lowpower_blacklist_path = params["c2i"]["lowpower_blacklist_path"]
 problematic_blacklist_path = params["c2i"]["problematic_blacklist_path"]
-coverage_path = params["c2i"]["coverage_path"]
 chromatin_path = "/path/to/chromatin"
 replication_path = "/path/to/replication_timing"
 
@@ -119,21 +118,6 @@ for bam_path in bam_files:
         if not patient_dir:
             print(f"[WARN] No problematic blacklist directory for {patient_id} under {base}", flush=True)
     
-    # Resolve coverage file
-    sample_coverage_file = None
-    if coverage_path:
-        base = Path(coverage_path)
-        patient_dir = resolve_patient_dir(base, patient_id)
-
-        if patient_dir:
-            matches = [p for p in patient_dir.glob("*.bigWig") if p.name.lower().startswith(sample_id.lower())]
-            if matches:
-                sample_coverage_file = str(matches[0])
-            else:
-                print(f"[WARN] No bigWig for sample {sample_id} in {patient_dir}", flush=True)
-        else:
-            print(f"[WARN] No coverage directory for patient {patient_id} under {base}", flush=True)
-            
     # Pass everything to the template
     template_args = {
         "bam_file_path": bam_path,
@@ -145,7 +129,6 @@ for bam_path in bam_files:
         "snp_blacklist_path": patient_snp,
         "lowpower_blacklist_path": patient_lowpower,
         "problematic_blacklist_path": patient_problematic,
-        "coverage_path": sample_coverage_file,
         "chromatin_path": chromatin_path,
         "replication_path": replication_path,
         "output_file": str(output_file)

@@ -28,11 +28,11 @@ def extract_read_features(
     ref_cache: ReferenceCache,
     mutation_types: List[str],
     context_flank: int,
+    frag_len: int,
     start_ctx: str,
     end_ctx: str,
     overlap: Optional[Tuple[int, int]] = None,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
-    coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None,
     filters: Optional[FilterContext] = None,
     highqual_positions: Optional[set[int]] = None,
@@ -46,7 +46,6 @@ def extract_read_features(
     seq_upper = seq.upper()
     chrom_str = read.reference_name or ""
     strand = "fwd" if not read.is_reverse else "rev"
-    frag_len = abs(read.template_length)
     
     generators = []
     total_n_opp = 0
@@ -65,7 +64,6 @@ def extract_read_features(
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
                 filters=filters,
                 highqual_positions=highqual_positions,
@@ -84,7 +82,6 @@ def extract_read_features(
                 end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
                 seq_upper=seq_upper,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
                 filters=filters,
                 highqual_positions=highqual_positions,
@@ -103,7 +100,6 @@ def extract_read_features(
                 end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
                 overlap=overlap,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
                 filters=filters,
                 highqual_positions=highqual_positions,
@@ -134,7 +130,6 @@ def _extract_indels_from_read(
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     filters: Optional["FilterContext"] = None,
     highqual_positions: Optional[set[int]] = None,
-    coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None
 ) -> Tuple[Iterator[dict], int]:
     """Extract indels."""
@@ -252,7 +247,6 @@ def _extract_indels_from_read(
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw
             )
             if row is not None:
@@ -274,7 +268,6 @@ def _extract_matches_from_read(
     seq_upper: str,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     overlap: Optional[Tuple[int, int]] = None,
-    coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None,
     filters: Optional["FilterContext"] = None,
     highqual_positions: Optional[set[int]] = None,
@@ -339,7 +332,6 @@ def _extract_matches_from_read(
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
                 bed_lookup=bed_lookup,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
             )
             if row is not None:
@@ -360,7 +352,6 @@ def _extract_mismatches_from_read(
     end_ctx: str,
     bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     overlap: Optional[Tuple[int, int]] = None,
-    coverage_bw: Optional["pyBigWig.bigWigFile"] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None,
     filters: Optional[FilterContext] = None,
     highqual_positions: Optional[set[int]] = None,
@@ -441,7 +432,6 @@ def _extract_mismatches_from_read(
                 end_ctx=end_ctx,
                 other_err=other_err,
                 bed_lookup=bed_lookup,
-                coverage_bw=coverage_bw,
                 replication_bw=replication_bw,
             )
             if row is not None:
