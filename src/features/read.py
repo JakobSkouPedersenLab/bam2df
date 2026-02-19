@@ -278,7 +278,7 @@ def _fragment_is_proper_length(read1: pysam.AlignedSegment,
     if frag_len <= 0:
         return False
     
-    return min_len < frag_len <= max_len
+    return min_len <= frag_len <= max_len
 
 def _paired_overlap(read1: pysam.AlignedSegment,
                     read2: pysam.AlignedSegment) -> tuple[int, int] | None:

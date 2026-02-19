@@ -12,6 +12,7 @@ import pysam
 import polars as pl
 import pyBigWig
 import gc
+from collections import deque
 
 from src.features.read import (_calculate_fragment_length, _extract_fragment_end_context, _extract_read_end_context, _fragment_is_proper_length,
                                _paired_overlap, indel_in_overlap, mismatch_in_overlap, match_in_overlap)
@@ -82,14 +83,24 @@ def process_chromosome(
     chunk_size = cfg.get("chunk_size", 50000)
     
     mate_buffer = {}
+    mate_fifo = deque()
+    max_mate_buffer = cfg.get("max_mate_buffer", 1_000_000)
     
     # Set up schema
     schema = dict(_PL_SCHEMA)
     if replication_bw is not None:
         schema.update(_REPLICATION_TIMING_SCHEMA)
+    
+    def ensure_capacity():
+        while len(mate_buffer) >= max_mate_buffer:
+            if not mate_fifo:
+                mate_buffer.clear()
+                stats.n_evicted += 1
+                break
+            old_qname = mate_fifo.popleft()
+            mate_buffer.pop(old_qname, None)
         
     def flush_chunk(schema) -> None:
-        """Write current chunk to a new Parquet file and clear the buffer."""
         nonlocal chunk_idx, rows_chunk
 
         if not rows_chunk:
@@ -127,17 +138,13 @@ def process_chromosome(
                 stats.n_skipped += 1
                 continue
 
-            max_mate_buffer = cfg.get("max_mate_buffer", 1_000_000)
-            if len(mate_buffer) >= max_mate_buffer:
-                mate_buffer.clear()
-                stats.n_skipped += 1
-                continue
-
             qname = read.query_name
 
             mate = mate_buffer.pop(qname, None)
             if mate is None:
-                mate_buffer[qname] = read  # buffer read1 OR read2
+                ensure_capacity()
+                mate_buffer[qname] = read
+                mate_fifo.append(qname)
                 continue
 
             # Validate we got one read1 and one read2
@@ -232,6 +239,14 @@ def process_chromosome(
             frag_len = read.template_length
             start_ctx, end_ctx = _extract_read_end_context(read, k=ctx_flank)
             
+            # Check fragment is proper length
+            min_len = cfg["min_len"]
+            max_len = cfg["max_len"]
+            if frag_len < min_len or frag_len > max_len:
+                stats.n_invalid_fragments += 1
+                stats.n_skipped += 1
+                continue
+            
             # Treat each read independently
             rows_iter, n_opp = extract_read_features(
                 read=read,
@@ -242,7 +257,7 @@ def process_chromosome(
                 frag_len=frag_len,
                 context_flank=ctx_flank,
                 start_ctx=start_ctx,
-                end_context=end_ctx,                
+                end_ctx=end_ctx,                
                 bed_lookup=bed_lookup,
                 overlap=None,
                 replication_bw=replication_bw,
@@ -282,7 +297,7 @@ def process_chromosome(
     # Write reservoir at the end
     if worker_reservoir:
         chunk_path = tmp_dir / f"{sample_id}_{chrom}_reservoir.parquet"
-        df = rows_to_polars(worker_reservoir, schema=_PL_SCHEMA)
+        df = rows_to_polars(worker_reservoir, schema=schema)
         df.write_parquet(chunk_path, compression="zstd")
         chunk_paths.append(chunk_path)
 
