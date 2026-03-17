@@ -110,12 +110,29 @@ for bam_path in bam_files:
         else:
             print(f"[WARN] No lowpower directory for {patient_id} under {base}", flush=True)
     
-    # For problematic blacklist, we pass only the base path
-    patient_problematic = problematic_blacklist_path
+    # Resolve patient-specific problematic blacklist
+    patient_problematic = None
     if problematic_blacklist_path:
         base = Path(problematic_blacklist_path)
         patient_dir = resolve_patient_dir(base, patient_id)
-        if not patient_dir:
+
+        if patient_dir:
+            matches = sorted(patient_dir.glob(f"{patient_dir.name}.problematic.merged.gt*X.bg"))
+
+            if len(matches) == 1:
+                patient_problematic = str(matches[0])
+            elif len(matches) > 1:
+                patient_problematic = str(matches[0])
+                print(
+                    f"[WARN] Multiple problematic blacklist files for {patient_id}, using first: {matches}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[WARN] No problematic blacklist for {patient_id} in {patient_dir}",
+                    flush=True,
+                )
+        else:
             print(f"[WARN] No problematic blacklist directory for {patient_id} under {base}", flush=True)
     
     # Pass everything to the template

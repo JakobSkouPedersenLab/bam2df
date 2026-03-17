@@ -54,49 +54,18 @@ def load_lowpower_blacklist(path: str, patient_id: str):
     df.columns = ["chr", "start", "end"]
     return df
 
-def load_problematic_blacklist(base_path: str, patient_id: str):
+def load_problematic_blacklist(file_path: str, patient_id: str):
     """
     Load the problematic blacklist file for a given patient.
-    Expected pattern:
-        {patient_id}.problematic.merged.gt<number>X.bg
-    Example:
-        C05638.problematic.merged.gt192X.bg
+    `file_path` is expected to be the full path to the blacklist file.
     """
-    pattern = os.path.join(base_path, patient_id, f"{patient_id}.problematic.merged.gt*X.bg")
-    matches = glob.glob(pattern)
-
-    if not matches:
+    if not file_path or not os.path.exists(file_path):
         print(f"[RawDataLoader:WARN] Problematic blacklist missing for {patient_id}", flush=True)
         return None
-    if len(matches) > 1:
-        print(f"[RawDataLoader:WARN] Multiple blacklist files found for {patient_id}: {matches}", flush=True)
 
-    file_path = matches[0]
     df = pl.read_csv(file_path, separator="\t", has_header=False)
     df.columns = ["chr", "start", "end"]
     return df
-
-def load_coverage_cache(base_path: str, patient_id: str, sample_id: str):
-    """
-    Fetch the path for BigWig coverage file for a given sample and return the path
-
-    Expected path:
-        {base_path}/{patient_id}/{sample_id}_cfdna.aligned.sorted.markdup.coverage.bigWig
-
-    Returns:
-        pyBigWig.BigWigFile object (open handle)
-    """
-    bw_path = os.path.join(
-        base_path,
-        patient_id,
-        f"{sample_id}_cfdna.aligned.sorted.markdup.coverage.bigWig"
-    )
-
-    if not os.path.exists(bw_path):
-        print(f"[RawDataLoader:WARN] Coverage file not found for {sample_id}: {bw_path}", flush=True)
-        return None
-
-    return bw_path
 
 def split_by_chr(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
     """Split large blacklist into per-chromosome DataFrames."""

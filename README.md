@@ -44,7 +44,7 @@ python ./src/bam2df.py \
     --donor_blacklist_file /path/to/donor_recurrent.tsv \
     --snp_blacklist_path /path/to/snps.tsv \
     --lowpower_blacklist_path /path/to/lowpower.bg \
-    --problematic_blacklist_path /path/to/problematic_folder/ \
+    --problematic_blacklist_path /path/to/problematic.bg / \
     --chromatin_path /path/to/chromatin_features.bw \
     --replication_path /path/to/replication_timing.bw \
     --verbose
