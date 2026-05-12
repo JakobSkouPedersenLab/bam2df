@@ -5,8 +5,8 @@ import pysam
 
 from src.features.constants import OBS_DELETION, OBS_INSERTION, OBS_MATCH, OBS_SNV
 from src.features.filters import _in_bed_1based
-from src.utility.data import (FilterContext, ReferenceCache, count_other_errors_in_read)
-from src.features.read import _build_read_row, _is_filtered, _iter_mismatches
+from src.utility.data import (FilterContext, MicrosatelliteLookup, ReferenceCache, RepeatMaskerLookup, count_other_errors_in_read)
+from src.features.read import _build_read_row, _is_filtered, _is_indel_blacklisted, _is_snv_blacklisted, _iter_mismatches
 
 import pyBigWig
 
@@ -27,18 +27,23 @@ def extract_read_features(
     patient_id: str,
     ref_cache: ReferenceCache,
     mutation_types: List[str],
-    context_flank: int,
     frag_len: int,
+    min_len: int,
+    max_len: int,
+    min_mapq: int,
+    min_bq: int,
+    context_flank: int,
     start_ctx: str,
     end_ctx: str,
     overlap: Optional[Tuple[int, int]] = None,
-    bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None,
+    mappability_bw: Optional["pyBigWig.bigWigFile"] = None,
+    microsatellite_lookup: MicrosatelliteLookup = None,
+    repeatmasker_lookup: RepeatMaskerLookup = None,
     filters: Optional[FilterContext] = None,
     highqual_positions: Optional[set[int]] = None,
-) -> Tuple[Iterator[dict], int]:
+) -> tuple[Iterator[dict], int]:
     """Yield one or more feature rows for the given read."""
-    
     seq = read.query_sequence
     if not seq:
         return iter(()), 0
@@ -57,17 +62,22 @@ def extract_read_features(
                 bam_path=bam_path,
                 patient_id=patient_id,
                 ref_cache=ref_cache,
-                chrom=chrom_str,    
+                chrom=chrom_str,
                 strand=strand,
                 frag_len=frag_len,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
                 context_flank=context_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                bed_lookup=bed_lookup,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
                 highqual_positions=highqual_positions,
-            )                                                                                                                                               
+            )                                                                                                                                           
         elif mutation_type == "match":
             gen, n_opp = _extract_matches_from_read(
                 read=read,
@@ -77,12 +87,18 @@ def extract_read_features(
                 chrom_str=chrom_str,
                 strand=strand,
                 frag_len=frag_len,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
                 context_flank=context_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                bed_lookup=bed_lookup,
                 seq_upper=seq_upper,
+                overlap=overlap,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
                 highqual_positions=highqual_positions,
             )
@@ -92,15 +108,20 @@ def extract_read_features(
                 bam_path=bam_path,
                 patient_id=patient_id,
                 ref_cache=ref_cache,
-                chrom_str=chrom_str,
+                chrom=chrom_str,
                 strand=strand,
                 frag_len=frag_len,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
                 context_flank=context_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                bed_lookup=bed_lookup,
                 overlap=overlap,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
                 highqual_positions=highqual_positions,
             )
@@ -124,20 +145,25 @@ def _extract_indels_from_read(
     chrom: str,
     strand: str,
     frag_len: int,
+    min_len: int,
+    max_len: int,
+    min_mapq: int,
     context_flank: int,
     start_ctx: str,
     end_ctx: str,
-    bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     filters: Optional["FilterContext"] = None,
     highqual_positions: Optional[set[int]] = None,
-    replication_bw: Optional["pyBigWig.bigWigFile"] = None
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None,
+    mappability_bw: Optional["pyBigWig.bigWigFile"] = None,
+    microsatellite_lookup: Optional[MicrosatelliteLookup] = None,
+    repeatmasker_lookup: Optional[RepeatMaskerLookup] = None,
 ) -> Tuple[Iterator[dict], int]:
     """Extract indels."""
     seq = read.query_sequence
     if not seq or read.is_unmapped or not read.cigartuples:
         return iter(()), 0
 
-    # (qpos, rpos0, obs_type, obs_ref, obs_base)
+    # (qpos, rpos0, obs_type, obs_ref, obs_alt)
     candidates: list[tuple[int, int, str, str, str]] = []
 
     ref_pos0 = read.reference_start  # 0-based
@@ -164,9 +190,9 @@ def _extract_indels_from_read(
 
             obs_type = OBS_INSERTION
             obs_ref = anchor
-            obs_base = anchor + ins
+            obs_alt = anchor + ins
 
-            candidates.append((query_pos, anchor_rpos0, obs_type, obs_ref, obs_base))
+            candidates.append((query_pos, anchor_rpos0, obs_type, obs_ref, obs_alt))
             query_pos += length
 
         elif op == 2:  # DELETION
@@ -185,9 +211,9 @@ def _extract_indels_from_read(
 
             obs_type = OBS_DELETION
             obs_ref = anchor + deleted
-            obs_base = anchor
+            obs_alt = anchor
 
-            candidates.append((query_pos, anchor_rpos0, obs_type, obs_ref, obs_base))
+            candidates.append((query_pos, anchor_rpos0, obs_type, obs_ref, obs_alt))
             ref_pos0 += length
             
         elif op == 3:  # N
@@ -208,8 +234,8 @@ def _extract_indels_from_read(
             highqual_positions = set(highqual_positions)
 
         candidates = [
-            (qpos, rpos0, obs_type, obs_ref, obs_base)
-            for (qpos, rpos0, obs_type, obs_ref, obs_base) in candidates
+            (qpos, rpos0, obs_type, obs_ref, obs_alt)
+            for (qpos, rpos0, obs_type, obs_ref, obs_alt) in candidates
             if rpos0 in highqual_positions
         ]
 
@@ -218,8 +244,8 @@ def _extract_indels_from_read(
         f = filters
         is_filt = _is_filtered
         candidates = [
-            (qpos, rpos0, obs_type, obs_ref, obs_base)
-            for (qpos, rpos0, obs_type, obs_ref, obs_base) in candidates
+            (qpos, rpos0, obs_type, obs_ref, obs_alt)
+            for (qpos, rpos0, obs_type, obs_ref, obs_alt) in candidates
             if not is_filt(f, chrom, rpos0, patient_id)
         ]
 
@@ -228,8 +254,25 @@ def _extract_indels_from_read(
         return iter(()), 0
 
     def _gen() -> Iterator[dict]:
-        for qpos, rpos0, obs_type, obs_ref, obs_base in candidates:
+        for qpos, rpos0, obs_type, obs_ref, obs_alt in candidates:
             pos_1based = rpos0 + 1
+            
+            # Safety: indel must actually change sequence
+            if obs_alt == obs_ref:
+                continue
+            
+            # Exact SNP blacklist match
+            indel_start0 = rpos0
+            indel_end0 = indel_start0 + len(obs_ref)
+            if _is_indel_blacklisted(
+                filters=filters,
+                chrom=chrom,
+                start=indel_start0,
+                end=indel_end0,
+                ref=obs_ref,
+                alt=obs_alt,
+            ):
+                continue
 
             row = _build_read_row(
                 read=read,
@@ -237,17 +280,22 @@ def _extract_indels_from_read(
                 chrom=chrom,
                 pos_1based=pos_1based,
                 obs_type=obs_type,
-                obs_base=obs_base,
+                obs_alt=obs_alt,
                 obs_ref=obs_ref,
                 strand=strand,
                 fragment_len=frag_len,
                 query_pos=qpos,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
                 ref_cache=ref_cache,
                 flank=context_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                bed_lookup=bed_lookup,
-                replication_bw=replication_bw
+                replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
             )
             if row is not None:
                 yield row
@@ -262,13 +310,18 @@ def _extract_matches_from_read(
     chrom_str: str,
     strand: str,
     frag_len: int,
+    min_len: int,
+    max_len: int,
+    min_mapq: int,
     context_flank: int,
     start_ctx: str,
     end_ctx: str,
     seq_upper: str,
-    bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     overlap: Optional[Tuple[int, int]] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None,
+    mappability_bw: Optional["pyBigWig.bigWigFile"] = None,
+    microsatellite_lookup: Optional[MicrosatelliteLookup] = None,
+    repeatmasker_lookup: Optional[RepeatMaskerLookup] = None,
     filters: Optional["FilterContext"] = None,
     highqual_positions: Optional[set[int]] = None,
 ) -> Tuple[Iterator[dict], int]:
@@ -291,8 +344,6 @@ def _extract_matches_from_read(
             continue
         if highqual_positions is not None and rpos not in highqual_positions:
             continue
-        if bed_lookup and not _in_bed_1based(chrom_str, rpos + 1, bed_lookup):
-            continue
         if filters and _is_filtered(filters, chrom_str, rpos, patient_id):
             continue
         n_opp += 1
@@ -311,8 +362,6 @@ def _extract_matches_from_read(
                 continue
             if highqual_positions is not None and rpos not in highqual_positions:
                 continue
-            if bed_lookup and not _in_bed_1based(chrom_str, rpos + 1, bed_lookup):
-                continue
             if filters and _is_filtered(filters, chrom_str, rpos, patient_id):
                 continue
 
@@ -322,17 +371,22 @@ def _extract_matches_from_read(
                 chrom=chrom_str,
                 pos_1based=rpos + 1,
                 obs_type=OBS_MATCH,
-                obs_base=seq_upper[qpos],
+                obs_alt=seq_upper[qpos],
                 obs_ref=rbase.upper(),
                 strand=strand,
                 fragment_len=frag_len,
                 query_pos=qpos,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
                 ref_cache=ref_cache,
                 flank=context_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                bed_lookup=bed_lookup,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
             )
             if row is not None:
                 yield row
@@ -344,15 +398,20 @@ def _extract_mismatches_from_read(
     bam_path: str,
     patient_id: str,
     ref_cache: ReferenceCache,
-    chrom_str: str,
+    chrom: str,
     strand: str,
     frag_len: int,
+    min_len: int,
+    max_len: int,
+    min_mapq: int,
     context_flank: int,
     start_ctx: str,
     end_ctx: str,
-    bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
     overlap: Optional[Tuple[int, int]] = None,
     replication_bw: Optional["pyBigWig.bigWigFile"] = None,
+    mappability_bw: Optional["pyBigWig.bigWigFile"] = None,
+    microsatellite_lookup: Optional[MicrosatelliteLookup] = None,
+    repeatmasker_lookup: Optional[RepeatMaskerLookup] = None,
     filters: Optional[FilterContext] = None,
     highqual_positions: Optional[set[int]] = None,
 ) -> Tuple[Iterator[dict], int]:
@@ -384,7 +443,7 @@ def _extract_mismatches_from_read(
             return False
         if use_hq and (rpos0 not in highqual_positions):
             return False
-        if use_filters and _is_filtered(filters, chrom_str, rpos0, patient_id):
+        if use_filters and _is_filtered(filters, chrom, rpos0, patient_id):
             return False
         return True
     
@@ -393,7 +452,7 @@ def _extract_mismatches_from_read(
         if use_filters:
             n_opp = sum(
                 1 for p in highqual_positions
-                if start_ovl <= p < end_ovl and not _is_filtered(filters, chrom_str, p, patient_id)
+                if start_ovl <= p < end_ovl and not _is_filtered(filters, chrom, p, patient_id)
             )
         else:
             n_opp = sum(1 for p in highqual_positions if start_ovl <= p < end_ovl)
@@ -401,7 +460,7 @@ def _extract_mismatches_from_read(
         if use_filters:
             n_opp = sum(
                 1 for p in range(start_ovl, end_ovl)
-                if not _is_filtered(filters, chrom_str, p, patient_id)
+                if not _is_filtered(filters, chrom, p, patient_id)
             )
         else:
             n_opp = end_ovl - start_ovl
@@ -411,28 +470,47 @@ def _extract_mismatches_from_read(
             if not eligible(rpos0):
                 continue
 
-            obs_base = seq_upper[qpos]
+            obs_alt = seq_upper[qpos]
             obs_ref = ref_base.upper()
             pos_1based = rpos0 + 1
+            
+            # Safety: must be a true SNV
+            if obs_alt == obs_ref:
+                continue
+            
+            # Exact SNP blacklist match
+            if _is_snv_blacklisted(
+                filters=filters,
+                chrom=chrom,
+                pos=rpos0,
+                ref=obs_ref,
+                alt=obs_alt,
+            ):
+                continue
 
             row = _build_read_row(
                 read=read,
                 bam_path=bam_path,
-                chrom=chrom_str,
+                chrom=chrom,
                 pos_1based=pos_1based,
                 obs_type=OBS_SNV,
-                obs_base=obs_base,
+                obs_alt=obs_alt,
                 obs_ref=obs_ref,
                 strand=strand,
                 fragment_len=frag_len,
                 query_pos=qpos,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
                 ref_cache=ref_cache,
                 flank=context_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
                 other_err=other_err,
-                bed_lookup=bed_lookup,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
             )
             if row is not None:
                 yield row

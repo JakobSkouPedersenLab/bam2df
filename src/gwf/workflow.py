@@ -48,8 +48,12 @@ donor_blacklist_file = params["c2i"]["donor_blacklist_file"]
 snp_blacklist_path = params["c2i"]["snp_blacklist_path"]
 lowpower_blacklist_path = params["c2i"]["lowpower_blacklist_path"]
 problematic_blacklist_path = params["c2i"]["problematic_blacklist_path"]
+bed_intervals_path = "/path/to/bed_intervals"
 chromatin_path = "/path/to/chromatin"
 replication_path = "/path/to/replication_timing"
+mappability_path = "/path/to/mappability"
+microsatellite_path = "path/to/microsatellite"
+repeatmasker_path = "/path/to/repeatmasker"
 
 samplesheet_train = read_text_file(bam_files)
 
@@ -146,8 +150,12 @@ for bam_path in bam_files:
         "snp_blacklist_path": patient_snp,
         "lowpower_blacklist_path": patient_lowpower,
         "problematic_blacklist_path": patient_problematic,
+        "bed_intervals_path": bed_intervals_path,
         "chromatin_path": chromatin_path,
         "replication_path": replication_path,
+        "mappability_path": mappability_path,
+        "microsatellite_path": microsatellite_path,
+        "repeatmasker_path": repeatmasker_path,
         "output_file": str(output_file)
     }
 

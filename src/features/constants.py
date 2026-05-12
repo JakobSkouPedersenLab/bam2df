@@ -8,14 +8,14 @@ OBS_MATCH = "M"
 
 _MD_RE = re.compile(r"(\d+)|([A-Z])|\^([A-Z]+)")
 _MD_TOKEN_RE = re.compile(r"(\d+)|\^([A-Z]+)|([A-Z])")
-_VALID_CHROMS = [f"chr{i}" for i in range(1, 23)]
+_VALID_CHROMS = [f"chr{i}" for i in range(1, 2)] # 1-23
 
 _PL_SCHEMA = {
     "qname": pl.UInt64,
     "chr": pl.Utf8,
     "genomic_pos": pl.Int32,
     "obs_type": pl.Categorical,
-    "obs_base": pl.Utf8,
+    "obs_alt": pl.Utf8,
     "obs_ref": pl.Utf8,
     "obs_alt_len": pl.Int8,
     "obs_ref_len": pl.Int8,
@@ -38,12 +38,28 @@ _PL_SCHEMA = {
     "homopolymer_run_len": pl.Int16,
     "read_depth": pl.Int16,
 }
+
 _REPLICATION_TIMING_SCHEMA = {
     "replication_timing": pl.Float32,
 }
+
+_MAPPABILITY_SCHEMA = {
+    "umap_score": pl.Float32,
+}
+
 _CHROMATIN_SCHEMA = {
     "atac_open": pl.Int8,
     "atac_dist_to_open": pl.UInt16,
     "dnase_open": pl.Int8,
     "dnase_dist_to_open": pl.UInt16,
+}
+
+_MICROSAT_SCHEMA = {
+    "in_microsatellite": pl.Boolean,
+    "microsatellite_motif": pl.Utf8,
+}
+
+_REPMASK_SCHEMA = {
+    "in_repeat_region": pl.Boolean,
+    "repeat_class": pl.Utf8,
 }

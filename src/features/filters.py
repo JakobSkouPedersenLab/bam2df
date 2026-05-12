@@ -94,7 +94,7 @@ def read_has_match(read: pysam.AlignedSegment) -> bool:
 
 def _high_quality_overlap(read, mate, overlap, min_bq):
     """
-    Identify high-quality overlapping reference positions between two reads.
+    Compute high-quality overlapping positions between two reads.
     """
     if min_bq is None:
         start, end = overlap
@@ -128,7 +128,7 @@ def _high_quality_overlap(read, mate, overlap, min_bq):
         if bq1 >= min_bq and bq2 >= min_bq:
             highqual.append(ref_pos)
 
-    return highqual
+    return set(highqual)
 
 def _high_quality_single_read(read, min_bq):
     """
@@ -154,17 +154,11 @@ def _high_quality_single_read(read, min_bq):
 
 def _read_filters(read: pysam.AlignedSegment,
                   min_mapq: int,
-                  max_nm: int) -> bool:
+                  min_frag_len: int = None,
+                  max_frag_len: int = None) -> bool:
     """
     Return True if a read passes all inclusion criteria.
     """
-    cigar_stats = read.get_cigar_stats()[0]
-    
-    # Check for clips
-    has_clip  = sum(cigar_stats[4:6]) != 0 # S, H (BAM_CSOFT_CLIP, BAM_CHARD_CLIP)
-    if has_clip:
-        return False
-    
     # Basic read-level flags
     if (
         read.is_unmapped
@@ -184,14 +178,17 @@ def _read_filters(read: pysam.AlignedSegment,
     # Mapping quality
     if read.mapping_quality < min_mapq:
         return False
+    
+    # Fragment length filter
+    if min_frag_len is not None or max_frag_len is not None:
+        frag_len = abs(read.template_length)
 
-    # Edit distance (NM tag)
-    if max_nm is not None:
-        try:
-            nm = read.get_tag("NM")
-            if nm > max_nm:
-                return False
-        except KeyError:
+        if frag_len == 0:
+            return False
+
+        if min_frag_len is not None and frag_len < min_frag_len:
+            return False
+        if max_frag_len is not None and frag_len > max_frag_len:
             return False
         
     return True

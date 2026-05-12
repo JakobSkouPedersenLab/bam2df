@@ -21,14 +21,16 @@ from src.features.filters import (_high_quality_overlap, _high_quality_single_re
                                   read_has_indel, read_has_mismatch, read_has_match, read_matches_any_type,
                                   read_matches_any_type_in_overlap)
 from src.features.extractors import extract_read_features
-from src.features.constants import (_CHROMATIN_SCHEMA, _PL_SCHEMA, _REPLICATION_TIMING_SCHEMA, _VALID_CHROMS,
+from src.features.constants import (_CHROMATIN_SCHEMA, _MAPPABILITY_SCHEMA, _MICROSAT_SCHEMA, _PL_SCHEMA, _REPLICATION_TIMING_SCHEMA, _REPMASK_SCHEMA, _VALID_CHROMS,
                                     OBS_DELETION, OBS_INSERTION, OBS_MATCH, OBS_SNV)
-from src.utility.data import ChromStats, FilterContext, GenomeStats, ReferenceCache, get_open_indices, rows_to_polars
+from src.utility.data import ChromStats, FilterContext, GenomeStats, MicrosatelliteLookup, ReferenceCache, RepeatMaskerLookup, get_open_indices, rows_to_polars
 from src.utility.sample import get_patient_id, get_sample_id
-from src.utility.io import get_hpc_tmp_dir, load_chr_mask
+from src.utility.io import get_hpc_tmp_dir, load_chr_mask, load_microsatellites_for_chrom, load_repeatmasker_for_chrom
 
 def process_chromosome(
     chrom: str,
+    start: int,
+    end: int,
     bam_file: pysam.AlignmentFile,
     fasta_path: str,
     mutation_types: list[str],
@@ -36,14 +38,18 @@ def process_chromosome(
     tmp_dir: Path,
     config: dict,
     verbose: bool,
-    bed_intervals: list | None,
     filters: FilterContext | None,
-    replication_bw: pyBigWig.pyBigWig | None
-) -> Optional[tuple[list[dict], ChromStats]]:
+    replication_bw: pyBigWig.pyBigWig | None,
+    mappability_bw: pyBigWig.pyBigWig | None,
+    microsatellite_lookup: MicrosatelliteLookup | None,
+    repeatmasker_lookup: RepeatMaskerLookup | None,
+) -> Optional[tuple[list[Path], ChromStats]]:
     """
-    Process one chromosome and return the output file path and ChromStats.
+    Process one chromosome interval [start, end) and return chunk paths + ChromStats.
     """
-    bed_lookup = _make_interval_lookup({chrom: bed_intervals or []})
+    if end <= start:
+        return None
+    
     ref_cache = ReferenceCache(fasta_path)
     bam_path = (
         bam_file.filename.decode()
@@ -56,72 +62,84 @@ def process_chromosome(
     patient_id = get_patient_id(bam_path)
     sample_id = get_sample_id(bam_path)
     
-    out_path = tmp_dir / f"{sample_id}_{chrom}.parquet"
-    
-    # Output bookkeeping
     chunk_paths: list[Path] = []
     chunk_idx = 0
 
-    # In-memory buffers (bounded)
     rows_chunk: list[dict] = []
     worker_reservoir: list[dict] = []
     seen = 0
     
     stats = ChromStats(chrom=chrom)
     
-    # Set up read iterator
-    if bed_intervals:
-        iters = (bam_file.fetch(chrom, s, e) for s, e in bed_intervals)
-        reads = (r for sub in iters for r in sub)
-    else:
-        reads = bam_file.fetch(chrom)
-    
-    min_bq = cfg.get("min_base_quality", 0)
-    min_mapq = cfg.get("min_mapq", 0)
-    max_nm = cfg.get("max_nm", 2)
+    min_mapq = cfg.get("min_mapq", 60)
+    min_bq = cfg.get("min_bq", 37)
+    chunk_size = cfg.get("chunk_size", 100000)
     use_paired_reads = cfg.get("use_paired_reads", True)
-    chunk_size = cfg.get("chunk_size", 50000)
     
     mate_buffer = {}
     mate_fifo = deque()
     max_mate_buffer = cfg.get("max_mate_buffer", 1_000_000)
-    
-    # Set up schema
+
     schema = dict(_PL_SCHEMA)
     if replication_bw is not None:
         schema.update(_REPLICATION_TIMING_SCHEMA)
-    
+    if mappability_bw is not None:
+        schema.update(_MAPPABILITY_SCHEMA)
+    if microsatellite_lookup is not None:
+        schema.update(_MICROSAT_SCHEMA)
+    if repeatmasker_lookup is not None:
+        schema.update(_REPMASK_SCHEMA)
+        
     def ensure_capacity():
         while len(mate_buffer) >= max_mate_buffer:
             if not mate_fifo:
+                stats.n_evicted += len(mate_buffer)
                 mate_buffer.clear()
-                stats.n_evicted += 1
                 break
+
             old_qname = mate_fifo.popleft()
-            mate_buffer.pop(old_qname, None)
-        
+            if mate_buffer.pop(old_qname, None) is not None:
+                stats.n_evicted += 1
+
     def flush_chunk(schema) -> None:
         nonlocal chunk_idx, rows_chunk
 
         if not rows_chunk:
             return
 
-        chunk_path = tmp_dir / f"{sample_id}_{chrom}_chunk{chunk_idx:05d}.parquet"
+        chunk_path = tmp_dir / (
+            f"{sample_id}_{chrom}_{start}_{end}_chunk{chunk_idx:05d}.parquet"
+        )
         df = rows_to_polars(rows_chunk, schema=schema)
-        df.write_parquet(chunk_path)
+        df.write_parquet(chunk_path, compression="zstd")
 
         chunk_paths.append(chunk_path)
         chunk_idx += 1
         rows_chunk.clear()
-        
+
+    def read_overlaps_interval(read: pysam.AlignedSegment, region_start: int, region_end: int) -> bool:
+        """
+        Fast coarse filter: keep only reads with any reference overlap with [region_start, region_end).
+        """
+        read_start = read.reference_start
+        read_end = read.reference_end
+        if read_start is None or read_end is None:
+            return False
+        return read_start < region_end and read_end > region_start
+
+    # Interval-bounded fetch
+    reads = bam_file.fetch(chrom, start, end)
+    
+    # Iterate reads
     for read in reads:
         # Apply read filters
-        if not _read_filters(read=read,
-                             min_mapq=min_mapq,
-                             max_nm=max_nm):
+        if not _read_filters(
+            read=read,
+            min_mapq=min_mapq,
+        ):
             stats.n_skipped += 1
             continue
-        
+            
         # Filter read on match/mismatch/indel
         read_predicates = {
             "match":    read_has_match,
@@ -147,7 +165,6 @@ def process_chromosome(
                 mate_fifo.append(qname)
                 continue
 
-            # Validate we got one read1 and one read2
             if read.is_read1 and mate.is_read2:
                 read1, read2 = read, mate
             elif read.is_read2 and mate.is_read1:
@@ -164,8 +181,15 @@ def process_chromosome(
             if not overlap:
                 stats.n_skipped += 1
                 continue
+                
+            # Restrict pair overlap to BED interval
+            ovl_start, ovl_end = overlap
+            clipped_overlap = (max(ovl_start, start), min(ovl_end, end))
+            if clipped_overlap[1] <= clipped_overlap[0]:
+                stats.n_skipped += 1
+                continue
 
-            highqual_overlap = _high_quality_overlap(read2, read1, overlap, min_bq)
+            highqual_overlap = _high_quality_overlap(read1, read2, clipped_overlap, min_bq)
             if not highqual_overlap:
                 stats.n_skipped += 1
                 continue
@@ -176,18 +200,9 @@ def process_chromosome(
                 stats.n_invalid_fragments += 1
                 stats.n_skipped += 1
                 continue
-
-            overlap_predicates = {
-                "match": match_in_overlap,
-                "mismatch": mismatch_in_overlap,
-                "indel": indel_in_overlap,
-            }
-            if not read_matches_any_type_in_overlap(read2, overlap, highqual_overlap,
-                                                    mutation_types, overlap_predicates):
-                stats.n_skipped += 1
-                continue
             
             frag_len = _calculate_fragment_length(read1, read2)
+            
             start_ctx, end_ctx = _extract_fragment_end_context(read1, read2, k=ctx_flank)
 
             # driver read: keep as read2
@@ -199,19 +214,25 @@ def process_chromosome(
                 ref_cache=ref_cache,
                 mutation_types=mutation_types,
                 frag_len=frag_len,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
+                min_bq=min_bq,
                 context_flank=ctx_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                bed_lookup=bed_lookup,
-                overlap=overlap,
+                overlap=clipped_overlap,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
                 highqual_positions=highqual_overlap,
             )
 
             stats.n_total += n_opp
             stats.n_reads += 1
-            
+                
             for row in rows_iter:
                 t = row["obs_type"]
                 if t == OBS_SNV:
@@ -255,14 +276,20 @@ def process_chromosome(
                 ref_cache=ref_cache,
                 mutation_types=mutation_types,
                 frag_len=frag_len,
+                min_len=min_len,
+                max_len=max_len,
+                min_mapq=min_mapq,
+                min_bq=min_bq,
                 context_flank=ctx_flank,
                 start_ctx=start_ctx,
-                end_ctx=end_ctx,                
-                bed_lookup=bed_lookup,
+                end_ctx=end_ctx,
                 overlap=None,
                 replication_bw=replication_bw,
+                mappability_bw=mappability_bw,
+                microsatellite_lookup=microsatellite_lookup,
+                repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
-                highqual_positions=highqual_positions,
+                highqual_positions=highqual_overlap,
             )
 
             stats.n_total += n_opp
@@ -296,7 +323,7 @@ def process_chromosome(
     
     # Write reservoir at the end
     if worker_reservoir:
-        chunk_path = tmp_dir / f"{sample_id}_{chrom}_reservoir.parquet"
+        chunk_path = tmp_dir / f"{sample_id}_{chrom}_{start}_{end}_reservoir.parquet"
         df = rows_to_polars(worker_reservoir, schema=schema)
         df.write_parquet(chunk_path, compression="zstd")
         chunk_paths.append(chunk_path)
@@ -312,49 +339,96 @@ def _process_chromosome_worker(
     fasta_path: str,
     mutation_types: list[str],
     n_match_sample: int,
-    bed_intervals: Optional[list[tuple[int, int]]],
     tmp_dir: Path,
     config: dict,
     filters: Optional[FilterContext] = None,
     replication_path: str = None,
+    mappability_path: str = None,
+    microsatellite_path: str = None,
+    repeatmasker_path: str = None,
     chromatin_path: str = None,
     verbose: bool = False,
+    bed_intervals: list[tuple[int, int]] = None, 
 ) -> Optional[tuple[list[Path], ChromStats]]:
     """
     Worker entry point for per-chromosome feature extraction.
-
-    This function is executed in a separate process. It:
-    1. Stream read-level features from BAM → Parquet (via process_chromosome)
-    2. Optionally annotate chromatin features (per chromosome)
-    3. Return (chrom, parquet_path, ChromStats)
     """
     t0 = time.perf_counter()
     
-    replication_bw = pyBigWig.open(replication_path) if replication_path else None
-
-    with pysam.AlignmentFile(bam_path, "rb") as bam:
-        try:
-            result = process_chromosome(
-                chrom=chrom,
-                bam_file=bam,
-                fasta_path=fasta_path,
-                mutation_types=mutation_types,
-                n_match_sample=n_match_sample,
-                tmp_dir=tmp_dir,
-                bed_intervals=bed_intervals,
-                config=config,
-                filters=filters,
-                replication_bw=replication_bw,
-                verbose=verbose
+    if bed_intervals is not None and len(bed_intervals) == 0:
+        if verbose:
+            print(
+                f"[ChromosomeProcessor:INFO] Skipping {chrom}: empty BED interval list",
+                flush=True,
             )
-        finally:
-            if replication_bw is not None:
-                replication_bw.close()
-
-    if not result:
         return None
+    
+    replication_bw = pyBigWig.open(replication_path) if replication_path else None
+    mappability_bw = pyBigWig.open(mappability_path) if mappability_path else None
+    microsatellite_lookup = (
+        load_microsatellites_for_chrom(microsatellite_path, chrom)
+        if microsatellite_path
+        else None
+    )
+    repeatmasker_lookup = (
+        load_repeatmasker_for_chrom(repeatmasker_path, chrom)
+        if repeatmasker_path
+        else None
+    )
+    
+    all_chunk_paths: list[Path] = []
+    chrom_stats_total = ChromStats(chrom=chrom)
 
-    chunk_paths, stats = result
+    try:
+        with pysam.AlignmentFile(bam_path, "rb") as bam:
+            if bed_intervals is None:
+                intervals_to_process = [(0, bam.get_reference_length(chrom))]
+            else:
+                intervals_to_process = bed_intervals
+                
+            for interval_idx, (start, end) in enumerate(intervals_to_process, start=1):
+                if end <= start:
+                    if verbose:
+                        print(
+                            f"[ChromosomeProcessor:WARN] Skipping invalid interval "
+                            f"{chrom}:{start}-{end}",
+                            flush=True,
+                        )
+                    continue
+                    
+                result = process_chromosome(
+                    chrom=chrom,
+                    start=start,
+                    end=end,
+                    bam_file=bam,
+                    fasta_path=fasta_path,
+                    mutation_types=mutation_types,
+                    n_match_sample=n_match_sample,
+                    tmp_dir=tmp_dir,
+                    config=config,
+                    filters=filters,
+                    replication_bw=replication_bw,
+                    mappability_bw=mappability_bw,
+                    microsatellite_lookup=microsatellite_lookup,
+                    repeatmasker_lookup=repeatmasker_lookup,
+                    verbose=verbose,
+                ) 
+                
+                if not result:
+                    continue
+                
+                chunk_paths, stats = result
+                all_chunk_paths.extend(chunk_paths)
+                chrom_stats_total += stats
+            
+    finally:
+        if replication_bw is not None:
+            replication_bw.close()
+        if mappability_bw is not None:
+            mappability_bw.close()
+
+    if not all_chunk_paths:
+        return None
 
     # Chromatin annotation (optional)
     if chromatin_path is not None:
@@ -374,7 +448,7 @@ def _process_chromosome_worker(
         del mask_atac, mask_dnase
         gc.collect()
 
-        for parquet_path in chunk_paths:
+        for parquet_path in all_chunk_paths:
             # only genomic_pos -> bins
             bins = (
                 pl.read_parquet(parquet_path, columns=["genomic_pos"])
@@ -404,11 +478,11 @@ def _process_chromosome_worker(
     if verbose:
         print(
             f"[ChromosomeProcessor:INFO] Finished {chrom} "
-            f"in {elapsed:.1f}s ({elapsed/60:.2f} min) — {stats}",
+            f"in {elapsed:.1f}s ({elapsed/60:.2f} min) — {chrom_stats_total}",
             flush=True,
         )
 
-    return chunk_paths, stats
+    return all_chunk_paths, chrom_stats_total
 
 class ChromosomeProcessor:
     """
@@ -419,6 +493,9 @@ class ChromosomeProcessor:
                  verbose: bool = False,
                  filters: Optional[FilterContext] = None,
                  replication_path: str = None,
+                 mappability_path: str = None,
+                 microsatellite_path: str = None,
+                 repeatmasker_path: str = None,
                  chromatin_path: str = None,
                  n_workers: int = 1):
         
@@ -426,6 +503,9 @@ class ChromosomeProcessor:
         self.verbose = verbose
         self.filters = filters
         self.replication_path = replication_path
+        self.mappability_path = mappability_path
+        self.microsatellite_path = microsatellite_path
+        self.repeatmasker_path = repeatmasker_path
         self.chromatin_path = chromatin_path
         self.n_workers = n_workers
         self.tmp_dir = get_hpc_tmp_dir(prefix="chrproc")
@@ -435,24 +515,26 @@ class ChromosomeProcessor:
                 bam_path: str,
                 reference_path: str,
                 mutation_types: list[str],
-                bed_path: str = None
+                bed_intervals: dict[str, list[tuple[int, int]]] = None,
     ) -> tuple[pl.LazyFrame, GenomeStats]:
 
         start_time = time.perf_counter()
         n_match_sample = self.config.get("n_match_sample", 0)
-        bed_dict = _load_bed(bed_path) if bed_path else {}
 
         chunk_paths_all: list[Path] = []
         genome_stats = GenomeStats()
 
-        if self.verbose:
-            print(f"[ChromosomeProcessor:INFO] Using tmp dir: {self.tmp_dir}", flush=True)
-        
         ctx = mp.get_context("spawn")
         with ProcessPoolExecutor(max_workers=self.n_workers, mp_context=ctx) as executor:
             futures = []
 
             for chrom in _VALID_CHROMS:
+                chrom_bed_intervals = None
+                if bed_intervals is not None:
+                    chrom_bed_intervals = bed_intervals.get(chrom, [])
+                    if not chrom_bed_intervals:
+                        continue
+                
                 futures.append(
                     executor.submit(
                         _process_chromosome_worker,
@@ -461,13 +543,16 @@ class ChromosomeProcessor:
                         fasta_path=reference_path,
                         mutation_types=mutation_types,
                         n_match_sample=n_match_sample,
-                        bed_intervals=bed_dict.get(chrom, []),
                         tmp_dir=self.tmp_dir,
                         chromatin_path=self.chromatin_path,
                         config=self.config,
                         filters=self.filters,
                         replication_path=self.replication_path,
+                        mappability_path=self.mappability_path,
+                        microsatellite_path=self.microsatellite_path,
+                        repeatmasker_path=self.repeatmasker_path,
                         verbose=self.verbose,
+                        bed_intervals=chrom_bed_intervals,
                     )
                 )
 
@@ -478,46 +563,18 @@ class ChromosomeProcessor:
 
                 chunk_paths, stats = result
                 chunk_paths_all.extend(chunk_paths)
-                genome_stats.add(stats)
+                genome_stats += stats
 
         if not chunk_paths_all:
             raise RuntimeError(f"No features extracted from BAM {bam_path}")
 
-        # Build lazy frames per chunk, optionally hstack chromatin sidecar
-        per_chunk_lfs: list[pl.LazyFrame] = []
-        use_chromatin = self.chromatin_path is not None
-
-        for chunk_path in chunk_paths_all:
-            lf_chunk = pl.scan_parquet(chunk_path)
-
-            if use_chromatin:
-                chrom_path = chunk_path.with_suffix(".chrom.parquet")
-                if chrom_path.exists():
-                    lf_chrom = pl.scan_parquet(chrom_path)
-                    lf_chunk = pl.concat([lf_chunk, lf_chrom], how="horizontal")
-
-            per_chunk_lfs.append(lf_chunk)
-
-        # Vertically concat all chunks
-        lf = pl.concat(per_chunk_lfs, how="vertical")
-
-        # Optional: global sorting
-        chr_order = {c: i for i, c in enumerate(_VALID_CHROMS)}
-        lf = (
-            lf.with_columns(
-                pl.col("chr").replace(chr_order).cast(pl.Int32).alias("_chr_order")
-            )
-            .sort(["_chr_order", "genomic_pos"])
-            .drop("_chr_order")
-        )
-
         if self.verbose:
             elapsed = time.perf_counter() - start_time
             print(
-                f"[ChromosomeProcessor:INFO] Prepared lazy plan from {len(chunk_paths_all)} chunks "
+                f"[ChromosomeProcessor:INFO] Prepared {len(chunk_paths_all)} chunk files "
                 f"in {elapsed/60:.2f} min",
                 flush=True,
             )
 
-        return lf, genome_stats
+        return chunk_paths_all, genome_stats
     

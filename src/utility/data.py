@@ -1,13 +1,18 @@
+from bisect import bisect_right
 from collections import Counter
 from math import log2
+import math
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import pysam
 import os
 
+from src.features.filters import _read_filters
 from src.utility.sample import get_patient_id, get_sample_id
 from scipy.sparse import csr_matrix
+
+import pyBigWig
 
 # Caching setup: dictionary to store coverage arrays for regions
 coverage_cache: dict[tuple[str, int], list[int]] = ({})  # Key: (contig, segment_start); Value: coverage array for that segment
@@ -51,6 +56,7 @@ class ChromStats:
     n_indels: int = 0
     n_total: int = 0
     n_skipped: int = 0
+    n_evicted: int = 0
     n_invalid_fragments: int = 0
 
     def __iadd__(self, other: "ChromStats"):
@@ -60,6 +66,7 @@ class ChromStats:
         self.n_indels += other.n_indels
         self.n_total += other.n_total
         self.n_skipped += other.n_skipped
+        self.n_evicted += other.n_evicted
         self.n_invalid_fragments += other.n_invalid_fragments
         return self
 
@@ -67,7 +74,7 @@ class ChromStats:
         return (f"[{self.chrom}] reads={self.n_reads:,}, mismatches={self.n_mismatches:,}, "
                 f"matches={self.n_matches:,}, indels={self.n_indels:,}, "
                 f"opportunities={self.n_total:,}, skipped={self.n_skipped:,}, "
-                f"invalid={self.n_invalid_fragments:,}")
+                f"evicted={self.n_evicted:,}, invalid={self.n_invalid_fragments:,}")
             
 @dataclass
 class GenomeStats:
@@ -76,12 +83,16 @@ class GenomeStats:
     along with per-chromosome breakdowns.
     """
     per_chrom: Dict[str, ChromStats] = field(default_factory=dict)
-    total: ChromStats = field(default_factory=lambda: ChromStats(chrom="ALL"))
+    total: ChromStats = field(default_factory=lambda: ChromStats(chrom="total"))
 
     def add(self, stats: ChromStats):
         """Add per-chromosome stats and update total."""
         self.per_chrom[stats.chrom] = stats
         self.total += stats
+        
+    def __iadd__(self, stats: ChromStats):
+        self.add(stats)
+        return self
 
     def __str__(self):
         lines = [f"[GenomeStats] Combined: {self.total}"]
@@ -102,9 +113,33 @@ class FilterContext:
     Container for all blacklist and coverage-related filtering resources
     for a single patient.
     """
-    genomic_blacklist_by_chr: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
-    donor_blacklist_by_chr: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
-    patient_blacklists_by_chr: Optional[Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]]] = None
+    genomic_blacklist_by_chr: Optional[dict[str, tuple]] = None
+    donor_blacklist_by_chr: Optional[dict[str, tuple]] = None
+    patient_blacklists_by_chr: Optional[dict[str, dict[str, tuple]]] = None
+    snv_blacklist: set[tuple[str, int, str, str]] = field(default_factory=set)
+    indel_blacklist: set[tuple[str, int, int, str, str]] = field(default_factory=set)
+
+@dataclass
+class MicrosatelliteLookup:
+    starts: list[int]
+    ends: list[int]
+    motifs: list[str]
+    def query(self, pos0: int) -> tuple[bool, Optional[str]]:
+        i = bisect_right(self.starts, pos0) - 1
+        if i >= 0 and pos0 < self.ends[i]:
+            return True, self.motifs[i]
+        return False, None
+
+@dataclass
+class RepeatMaskerLookup:
+    starts: list[int]
+    ends: list[int]
+    rep_classes: list[str]
+    def query(self, pos0: int) -> tuple[bool, Optional[str]]:
+        i = bisect_right(self.starts, pos0) - 1
+        if i >= 0 and pos0 < self.ends[i]:
+            return True, self.rep_classes[i]
+        return False, None
 
 class ReferenceCache:
     """Fetch reference chunks and keep a sliding window cache per contig."""
@@ -147,6 +182,32 @@ def calculate_local_complexity(seq: str) -> tuple[float, float]:
         h2 = 0.0
 
     return h1, h2
+
+def _bw_value_at_1based(
+    bw: Optional["pyBigWig.bigWigFile"],
+    chrom: str,
+    pos_1based: int,
+) -> Optional[float]:
+    """
+    Return bigWig value at a 1-based genomic position.
+    Uses 0-based half-open indexing internally.
+    """
+    if bw is None:
+        return None
+
+    try:
+        vals = bw.values(chrom, pos_1based - 1, pos_1based)
+    except RuntimeError:
+        return None
+
+    if not vals:
+        return None
+
+    v = vals[0]
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+
+    return float(v)
 
 def contains_indel_or_clip(n_ins, n_del, n_soft, n_hard) -> bool:
     return (n_ins + n_del + n_soft + n_hard) > 0
@@ -197,7 +258,12 @@ def get_bam_handle(bam_path: str) -> pysam.AlignmentFile:
         bamfile_cache[bam_path] = pysam.AlignmentFile(bam_path, "rb", threads=2)
     return bamfile_cache[bam_path]
 
-def get_read_depth(bam_path: str, contig: str, position: int) -> int:
+def _get_read_depth(bam_path: str,
+                    contig: str,
+                    position: int,
+                    min_mapq: int,
+                    min_frag_len: int,
+                    max_frag_len: int) -> int:
     """
     Return the read depth at a specific 0-based reference position on a contig.
 
@@ -219,7 +285,6 @@ def get_read_depth(bam_path: str, contig: str, position: int) -> int:
         Total read depth at the requested position.
     """
     global current_cache_contig, coverage_cache
-
     bam_file = get_bam_handle(bam_path)
 
     # If we switched to a new contig, clear old coverage segments
@@ -229,18 +294,26 @@ def get_read_depth(bam_path: str, contig: str, position: int) -> int:
 
     # Compute which segment this position belongs to
     segment_start = (position // CACHE_SEGMENT_SIZE) * CACHE_SEGMENT_SIZE
-    segment_key = (contig, segment_start)
+    segment_key = (contig, segment_start, min_mapq, min_frag_len, max_frag_len)
 
     # Try to reuse cached coverage for this segment
     segment_depth = coverage_cache.get(segment_key)
     if segment_depth is None:
         segment_end = segment_start + CACHE_SEGMENT_SIZE
+        
+        # Create a callback that applies the same filters with the correct parameters
+        def filter_callback(read):
+            return _read_filters(read=read,
+                                 min_mapq=min_mapq,
+                                 min_frag_len=min_frag_len,
+                                 max_frag_len=max_frag_len)
 
         # Compute depth arrays for this chunk
         A, C, G, T = bam_file.count_coverage(
             contig,
             start=segment_start,
             stop=segment_end,
+            read_callback=filter_callback
         )
         # Combine base-specific counts into total depth
         segment_depth = [a + c + g + t for a, c, g, t in zip(A, C, G, T)]

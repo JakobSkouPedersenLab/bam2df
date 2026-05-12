@@ -9,7 +9,7 @@ def add_tumor_mutation_labels(
     mutation_file: Optional[Sequence[Tuple[str, int, str, str]]],
 ) -> pl.LazyFrame:
     """
-    Add tumor_mut_present (Int8 0/1) by joining on (chr, genomic_pos, obs_ref, obs_base).
+    Add tumor_mut_present (Int8 0/1) by joining on (chr, genomic_pos, obs_ref, obs_alt).
     Works on DataFrame or LazyFrame; returns LazyFrame.
     """
     lf = df.lazy() if isinstance(df, pl.DataFrame) else df
@@ -30,7 +30,7 @@ def add_tumor_mutation_labels(
 
     mut_df = pl.DataFrame(
         rows,
-        schema=["chr", "genomic_pos", "obs_ref", "obs_base"],
+        schema=["chr", "genomic_pos", "obs_ref", "obs_alt"],
         orient="row",
     ).unique()
 
@@ -39,6 +39,6 @@ def add_tumor_mutation_labels(
     )
 
     return (
-        lf.join(mut_lf, on=["chr", "genomic_pos", "obs_ref", "obs_base"], how="left")
+        lf.join(mut_lf, on=["chr", "genomic_pos", "obs_ref", "obs_alt"], how="left")
           .with_columns(pl.col("tumor_mut_present").fill_null(0).cast(pl.Int8))
     )

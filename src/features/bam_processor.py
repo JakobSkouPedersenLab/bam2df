@@ -1,9 +1,10 @@
+from pathlib import Path
 from typing import Optional, Tuple
 import polars as pl
 
 from src.features.chr_processor import ChromosomeProcessor
 from src.utility.sample import get_patient_id, get_sample_id
-from src.utility.data import ChromStats, FilterContext
+from src.utility.data import ChromStats, FilterContext, GenomeStats
 
 import pyBigWig
 
@@ -17,7 +18,11 @@ class BamProcessor:
                  verbose: bool = False,
                  filters: Optional[FilterContext] = None,
                  replication_path: str = None,
+                 mappability_path: str = None,
+                 microsatellite_path: str = None,
+                 repeatmasker_path: str = None,
                  chromatin_path: str = None,
+                 bed_intervals: dict[str, list[tuple[int, int]]] = None,
                  n_workers: int = 1):
         
         self.cfg = cfg
@@ -25,10 +30,14 @@ class BamProcessor:
         self.verbose = verbose
         self.filters = filters
         self.replication_path = replication_path
+        self.mappability_path = mappability_path
+        self.microsatellite_path = microsatellite_path
+        self.repeatmasker_path = repeatmasker_path
         self.chromatin_path = chromatin_path
+        self.bed_intervals = bed_intervals
         self.n_workers = n_workers
 
-    def extract_data(self, bam_path: str) -> Tuple[pl.LazyFrame, pl.DataFrame]:
+    def extract_data(self, bam_path: str) -> Tuple[list[Path], pl.DataFrame]:
         """
         Extracts, filters, and summarizes data for one BAM file.
         """
@@ -39,55 +48,81 @@ class BamProcessor:
                                             verbose=self.verbose,
                                             filters=self.filters,
                                             replication_path=self.replication_path,
+                                            mappability_path=self.mappability_path,
+                                            microsatellite_path=self.microsatellite_path,
+                                            repeatmasker_path=self.repeatmasker_path,
                                             chromatin_path=self.chromatin_path,
                                             n_workers=self.n_workers)
-
-        bed_path = self.cfg.get("bed_file")
+        
         mutation_types = self.cfg.get("mutation_types")
         
         if not mutation_types:
             raise ValueError("cfg['mutation_types'] is missing or empty")
         
-        lf, genome_stats = chr_processor.process(
+        chunk_paths, genome_stats = chr_processor.process(
             bam_path=bam_path,
             reference_path=self.reference_path,
             mutation_types=mutation_types,
-            bed_path=bed_path,
+            bed_intervals=self.bed_intervals,
         )
         
-        if lf is None:
+        if not chunk_paths:
             raise RuntimeError("No data extracted")
-                
-        # Attach ids lazily
-        patient_id = get_patient_id(bam_path)
-        sample_id = get_sample_id(bam_path)
-        lf = lf.with_columns([
-            pl.lit(patient_id).alias("patient_id"),
-            pl.lit(sample_id).alias("sample_id"),
-        ])
-      
+        
         # Collect stats
-        info = self.summarize_info(genome_stats.total)
+        info = self.summarize_info(genome_stats)
         
         if self.verbose:
             print(f"[BamProcessor:INFO] Completed BAM: {bam_path}", flush=True)
 
-        return lf, info
+        return chunk_paths, info
+
+    @classmethod
+    def summarize_info(cls, genome_stats: GenomeStats) -> pl.DataFrame:
+        rows = []
+
+        # Define expected chromosomes (match your naming!)
+        expected_chroms = [f"chr{i}" for i in range(1, 23)]
+
+        for chrom in expected_chroms:
+            stats = genome_stats.per_chrom.get(chrom)
+
+            if stats is None:
+                # Fill missing with zeros
+                stats = ChromStats(chrom=chrom)
+
+            rows.append(cls._metrics_from_counts(stats))
+
+        # Total row (already aggregated)
+        rows.append(cls._metrics_from_counts(genome_stats.total))
+
+        return pl.DataFrame(rows)
 
     @staticmethod
-    def summarize_info(stats: ChromStats) -> pl.DataFrame:
-        """Compute high-level summary stats."""
-        total_mismatches = stats.n_mismatches
-        total_matches = stats.n_matches
-        total_coverage = stats.n_total
+    def _metrics_from_counts(stats: ChromStats) -> dict:
+        """
+        Compute counts a single ChromStats.
+        """
+        total_mismatches = int(stats.n_mismatches)
+        total_matches = int(stats.n_matches)
+        total_indels = int(stats.n_indels)
+        total_coverage = int(stats.n_total)
 
-        summary = pl.DataFrame({
-            "total_mismatches": [total_mismatches],
-            "total_matches": [total_matches],
-            "total_coverage": [total_coverage],
-        })
+        denom_cov = max(total_coverage, 1)  # avoid /0
+        mismatch_load = total_mismatches / denom_cov
+        indel_load = total_indels / denom_cov
 
-        beta = summary["total_matches"][0] / max(summary["total_coverage"][0] - summary["total_mismatches"][0], 1e-8)
-        summary = summary.with_columns(pl.Series("beta", [beta]))
-        
-        return summary
+        # opportunities excluding mismatches
+        denom_beta = max(total_coverage - total_mismatches, 1)
+        beta = total_matches / denom_beta
+
+        return {
+            "chrom": stats.chrom,
+            "coverage": total_coverage,
+            "mismatches": total_mismatches,
+            "matches": total_matches,
+            "indels": total_indels,
+            "mismatch_load": mismatch_load,
+            "indel_load": indel_load,
+            "beta": beta,
+        }

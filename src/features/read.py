@@ -8,7 +8,8 @@ import pyBigWig
 import hashlib
 
 from src.features.constants import _MD_RE, _MD_TOKEN_RE
-from src.utility.data import FilterContext, ReferenceCache, calculate_local_complexity, get_read_depth
+from src.utility.data import (FilterContext, MicrosatelliteLookup, ReferenceCache,
+                              RepeatMaskerLookup, _bw_value_at_1based, _get_read_depth, calculate_local_complexity)
 
 def match_in_overlap(read: pysam.AlignedSegment,
                      overlap: tuple[int, int],
@@ -343,7 +344,8 @@ def _iter_mismatches(read: pysam.AlignedSegment):
             yield qpos, rpos, rbase
             
 def _pos_in_blacklist_chr(arr_by_chr: dict[str, tuple[np.ndarray, np.ndarray]],
-                          chrom: str, pos: int) -> bool:
+                          chrom: str,
+                          pos: int) -> bool:
     """
     O(log M) lookup using binary search on pre-sorted arrays.
     """
@@ -354,6 +356,9 @@ def _pos_in_blacklist_chr(arr_by_chr: dict[str, tuple[np.ndarray, np.ndarray]],
     return bool(i >= 0 and pos < ends[i])
 
 def _is_filtered(filters: "FilterContext", chrom: str, pos: int, patient_id: str) -> bool:
+    """
+    Region-level filter of positions.
+    """
     if not filters:
         return False
     
@@ -366,14 +371,37 @@ def _is_filtered(filters: "FilterContext", chrom: str, pos: int, patient_id: str
 
     if donor_blacklist_by_chr and _pos_in_blacklist_chr(donor_blacklist_by_chr, chrom, pos):
         return True
-    
+        
     if patient_blacklists_by_chr:
-        for key in ("snp_blacklist", "lowpower_blacklist", "problematic_blacklist"):
+        for key in ("lowpower_blacklist", "problematic_blacklist"):
             chr_dict = patient_blacklists_by_chr.get(key)
             if chr_dict and _pos_in_blacklist_chr(chr_dict, chrom, pos):
                 return True
     
     return False
+
+def _is_snv_blacklisted(
+    filters: "FilterContext",
+    chrom: str,
+    pos: int,
+    ref: str,
+    alt: str,
+) -> bool:
+    if not filters or not filters.snv_blacklist:
+        return False
+    return (chrom, pos, ref, alt) in filters.snv_blacklist
+
+def _is_indel_blacklisted(
+    filters: "FilterContext",
+    chrom: str,
+    start: int,
+    end: int,
+    ref: str,
+    alt: str,
+) -> bool:
+    if not filters or not filters.indel_blacklist:
+        return False
+    return (chrom, start, end, ref, alt) in filters.indel_blacklist
 
 def _get_base_qual_at(read: pysam.AlignedSegment, qpos: int) -> Optional[int]:
     """Return base quality at query position or None."""
@@ -463,24 +491,25 @@ def _build_read_row(
     chrom: str,
     pos_1based: int,
     obs_type: str,   # "S" / "I" / "D", "M"
-    obs_base: str,   # alt allele string (>=1)
+    obs_alt: str,   # alt allele string (>=1)
     obs_ref: str,    # ref allele string (>=1)
     strand: str,
     fragment_len: int,
     query_pos: int,
+    min_len: int,
+    max_len: int,
+    min_mapq: int,
     ref_cache: ReferenceCache,
     flank: int,
     start_ctx: str,
     end_ctx: str,
     other_err: int = 0,
-    bed_lookup: Optional[Dict[str, Tuple[List[int], List[int]]]] = None,
-    replication_bw: Optional["pyBigWig.bigWigFile"] = None
+    replication_bw: Optional["pyBigWig.bigWigFile"] = None,
+    mappability_bw: Optional["pyBigWig.bigWigFile"] = None,
+    microsatellite_lookup: Optional[MicrosatelliteLookup] = None,
+    repeatmasker_lookup: Optional[RepeatMaskerLookup] = None,
 ) -> Optional[Dict[str, Any]]:
     """Per-base feature extraction."""
-    # BED filter
-    if bed_lookup and not _in_bed_1based(chrom, pos_1based, bed_lookup):
-        return None
-
     ctx_len = 2 * flank + 1
     ref_ctx = ref_cache.fetch(chrom, pos_1based, flank)
     if len(ref_ctx) < ctx_len:
@@ -494,7 +523,14 @@ def _build_read_row(
     n_other_err = other_err - (1 if obs_type == "S" else 0)
 
     # Coverage
-    read_depth = get_read_depth(bam_path, chrom, pos_1based - 1)
+    read_depth = _get_read_depth(
+        bam_path=bam_path,
+        contig=chrom,
+        position=pos_1based - 1,
+        min_mapq=min_mapq,
+        min_frag_len=min_len,
+        max_frag_len=max_len,
+    )
         
     # Replication timing
     replication_timing = None
@@ -510,8 +546,42 @@ def _build_read_row(
     dist_to_indel_or_clip = _get_dist_to_indel_or_clip(read, pos_1based - 1)
     homopolymer_run_len = _get_homopolymer_run_length(ref_cache, chrom, pos_1based)
     
+    # Optional replication timing
+    replication_timing = np.nan
+    if replication_bw is not None:
+        rt = replication_bw.values(chrom, pos_1based - 1, pos_1based)
+        if rt and rt[0] is not None and not math.isnan(rt[0]):
+            replication_timing = float(rt[0])
+
+    # Optional mappability
+    umap_k100 = _bw_value_at_1based(mappability_bw, chrom, pos_1based)
+    if umap_k100 is None or (isinstance(umap_k100, float) and math.isnan(umap_k100)):
+        umap_k100 = np.nan
+        
+    # Optional microsatellite annotation
+    in_microsatellite = False
+    microsatellite_motif = "no_microsatellite"
+    if microsatellite_lookup is not None:
+        pos0 = pos_1based - 1
+        is_micro, motif = microsatellite_lookup.query(pos0)
+        in_microsatellite = bool(is_micro)
+        microsatellite_motif = (
+            motif if in_microsatellite and motif is not None else "no_microsatellite"
+        )
+
+    # Optional RepeatMasker annotation
+    in_repeat_region = False
+    repeat_class = "no_repeat"
+    if repeatmasker_lookup is not None:
+        pos0 = pos_1based - 1
+        is_repeat, rep_class = repeatmasker_lookup.query(pos0)
+        in_repeat_region = bool(is_repeat)
+        repeat_class = (
+            rep_class if in_repeat_region and rep_class is not None else "no_repeat"
+        )
+    
     # Allele-length features
-    obs_alt_len = len(obs_base) if obs_base is not None else 0
+    obs_alt_len = len(obs_alt) if obs_alt is not None else 0
     obs_ref_len = len(obs_ref) if obs_ref is not None else 0
     len_delta = obs_alt_len - obs_ref_len
             
@@ -521,7 +591,7 @@ def _build_read_row(
         "genomic_pos": pos_1based,
 
         "obs_type": obs_type,
-        "obs_base": obs_base,
+        "obs_alt": obs_alt,
         "obs_ref": obs_ref,
         "obs_alt_len": obs_alt_len,
         "obs_ref_len": obs_ref_len,
@@ -549,10 +619,17 @@ def _build_read_row(
         "homopolymer_run_len": homopolymer_run_len,
 
         "read_depth": read_depth,
+        
+        "umap_score": umap_k100,
+        
+        "replication_timing": replication_timing,
+        
+        "in_microsatellite": in_microsatellite,
+        "microsatellite_motif": microsatellite_motif,
+        
+        "in_repeat_region": in_repeat_region,
+        "repeat_class": repeat_class,
     }
     
-    if replication_timing is not None:
-        row["replication_timing"] = replication_timing
-        
     return row
     

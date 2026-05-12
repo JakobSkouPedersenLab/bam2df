@@ -95,7 +95,7 @@ Each row in the output parquet file corresponds to a single read position and co
 | chr | Chromosome |
 | genomic_pos | genomic coordinate |
 | obs_type | Observation type (eg, `S` for `SNV`) |
-| obs_base | Observed base(s) in read |
+| obs_alt | Alternative base in read |
 | obs_ref | Reference base(s) |
 | obs_alt_len | Length of alternate allele |
 | obs_ref_len | Length of reference allele |
@@ -127,7 +127,7 @@ The pipeline optionally supports **labeling read-level mismatches** using an ext
 
 If a mutation catalog is provided via `--mutation_path`, the pipeline will:
 
-- Compare each extracted mismatch `(chr, genomic_pos, obs_ref, obs_base)`
+- Compare each extracted mismatch `(chr, genomic_pos, obs_ref, obs_alt)`
 - Assign a binary label:
   - `tumor_mut_present = 1` if the mismatch matches a known mutation
   - `tumor_mut_present = 0` otherwise
@@ -160,7 +160,6 @@ Example:
     "max_len": 299,
     "min_base_quality": 30,
     "min_mapq": 40,
-    "max_nm": 2,
     "bin_size_bp": 10,
     "pre_sample_seed": 0,
     "n_match_sample": 0,
@@ -177,7 +176,6 @@ Example:
 - **min_len / max_len**: Minimum and maximum read length allowed.
 - **min_base_quality**: Minimum base quality (Phred) required at the variant position.
 - **min_mapq**: Minimum read mapping quality required.
-- **max_nm**: Maximum edit distance (number of mismatches/indels) allowed per read.
 - **bin_size_bp**: Bin size (in base pairs) used for genomic binning or aggregation.
 - **pre_sample_seed**: Random seed used for deterministic subsampling.
 - **n_match_sample**: Number of matching (reference) bases to subsample (0 = keep all).

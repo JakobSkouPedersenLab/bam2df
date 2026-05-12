@@ -2,7 +2,7 @@ import atexit
 import gzip
 import pathlib
 import shutil
-from typing import List
+from typing import List, Optional
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -13,6 +13,7 @@ from scipy.sparse import csr_matrix, load_npz
 
 from src.features.constants import _VALID_CHROMS
 from src.utility.sample import get_patient_id
+from src.utility.data import MicrosatelliteLookup, RepeatMaskerLookup
 
 def load_bed(path: str, label: str):
     if not path:
@@ -66,6 +67,134 @@ def load_problematic_blacklist(file_path: str, patient_id: str):
     df = pl.read_csv(file_path, separator="\t", has_header=False)
     df.columns = ["chr", "start", "end"]
     return df
+
+def load_microsatellites_for_chrom(path: str | pathlib.Path, chrom: str) -> Optional[MicrosatelliteLookup]:
+    starts: list[int] = []
+    ends: list[int] = []
+    motifs: list[str] = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+
+            row_chrom = parts[1]
+            if row_chrom != chrom:
+                continue
+
+            start = int(parts[2])
+            end = int(parts[3])
+            motif = parts[4]
+
+            starts.append(start)
+            ends.append(end)
+            motifs.append(motif)
+
+    if not starts:
+        return None
+
+    order = sorted(range(len(starts)), key=lambda i: starts[i])
+    starts = [starts[i] for i in order]
+    ends = [ends[i] for i in order]
+    motifs = [motifs[i] for i in order]
+
+    return MicrosatelliteLookup(starts=starts, ends=ends, motifs=motifs)
+
+def load_repeatmasker_for_chrom(
+    repeatmasker_path: str | pathlib.Path,
+    chrom: str,
+) -> Optional[RepeatMaskerLookup]:
+    """
+    Load only RepeatMasker rows for one chromosome from a UCSC rmsk-style text file.
+
+    Expected columns:
+      bin swScore milliDiv milliDel milliIns genoName genoStart genoEnd genoLeft
+      strand repName repClass repFamily repStart repEnd repLeft id
+    """
+    starts: list[int] = []
+    ends: list[int] = []
+    rep_classes: list[str] = []
+
+    path = pathlib.Path(repeatmasker_path)
+
+    collecting = False
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split()
+            if len(parts) < 13:
+                continue
+
+            row_chrom = parts[5]
+            if row_chrom == chrom:
+                collecting = True
+                geno_start = int(parts[6])   # 0-based start
+                geno_end = int(parts[7])     # 0-based end-exclusive
+                rep_class = parts[11]
+
+                starts.append(geno_start)
+                ends.append(geno_end)
+                rep_classes.append(rep_class)
+
+            elif collecting:
+                # File is usually grouped by chromosome; once we've left the block,
+                # stop scanning.
+                break
+
+    if not starts:
+        return None
+
+    order = sorted(range(len(starts)), key=lambda i: starts[i])
+    starts = [starts[i] for i in order]
+    ends = [ends[i] for i in order]
+    rep_classes = [rep_classes[i] for i in order]
+
+    return RepeatMaskerLookup(
+        starts=starts,
+        ends=ends,
+        rep_classes=rep_classes,
+    )
+
+def load_bed_intervals(path: str) -> dict[str, list[tuple[int, int]]]:
+    """
+    Load a BED file into {chrom: [(start, end), ...]}.
+    Assumes BED is 0-based, half-open.
+    """
+    intervals: dict[str, list[tuple[int, int]]] = {}
+
+    with open(path) as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            fields = line.split("\t")
+            if len(fields) < 3:
+                raise ValueError(f"BED parse error at line {line_no}: expected >=3 columns")
+
+            chrom = fields[0]
+            start = int(fields[1])
+            end = int(fields[2])
+
+            if end <= start:
+                raise ValueError(
+                    f"BED parse error at line {line_no}: end must be > start, got {chrom}:{start}-{end}"
+                )
+
+            intervals.setdefault(chrom, []).append((start, end))
+
+    for chrom in intervals:
+        intervals[chrom].sort()
+
+    return intervals
 
 def split_by_chr(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
     """Split large blacklist into per-chromosome DataFrames."""

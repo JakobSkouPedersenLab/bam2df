@@ -16,6 +16,7 @@ pandas = "^2.2.3"
 pyyaml = "^6.0"
 psutil = "^6.0.0"
 scipy = "^1.17.0"
+pyarrow = "<17.0.0"
 
 [build-system]
 requires = ["poetry-core"]

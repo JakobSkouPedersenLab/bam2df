@@ -5,13 +5,13 @@
     "min_len": 0,
     "max_len": 299,
     "min_base_quality": 30,
-    "min_mapq": 40,
-    "max_nm": 2,
+    "min_mapq": 20,
     "bin_size_bp": 10,
     "pre_sample_seed": 0,
     "n_match_sample": 0,
     "mutation_types": ["mismatch", "indel"],
     "use_paired_reads": true,
-    "chunk_size": 50000
+    "chunk_size": 250000,
+    "max_mate_buffer": 1000000
   }
 }

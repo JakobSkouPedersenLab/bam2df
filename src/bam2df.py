@@ -7,6 +7,7 @@ from pathlib import Path
 import polars as pl
 import pyBigWig
 import pickle
+import pyarrow.parquet as pq
 
 from scipy.sparse import csr_matrix, load_npz
 
@@ -15,9 +16,18 @@ from src.utility.data import FilterContext
 from src.utility.sample import get_sample_id
 from src.features.bam_processor import BamProcessor
 
-from src.utility.io import (load_bed, load_table, load_snp_blacklist, load_lowpower_blacklist,
+from src.utility.io import (load_bed, load_bed_intervals, load_table, load_snp_blacklist, load_lowpower_blacklist,
                             load_problematic_blacklist, prepare_blacklist_arrays, split_by_chr)
 from src.utility.sample import get_patient_id
+
+from src.features.constants import (
+    _PL_SCHEMA,
+    _REPLICATION_TIMING_SCHEMA,
+    _MAPPABILITY_SCHEMA,
+    _CHROMATIN_SCHEMA,
+    _MICROSAT_SCHEMA,
+    _REPMASK_SCHEMA,
+)
 
 n_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
 
@@ -34,8 +44,12 @@ def parse_args():
     parser.add_argument("--snp_blacklist_path", type=str, default=None)
     parser.add_argument("--lowpower_blacklist_path", type=str, default=None)
     parser.add_argument("--problematic_blacklist_path", type=str, default=None)
+    parser.add_argument("--bed_intervals_path", type=str, default=None)
     parser.add_argument("--chromatin_path", type=str, default=None)
     parser.add_argument("--replication_path", type=str, default=None)
+    parser.add_argument("--mappability_path", type=str, default=None)
+    parser.add_argument("--microsatellite_path", type=str, default=None)
+    parser.add_argument("--repeatmasker_path", type=str, default=None)
     
     parser.add_argument("--output_file", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
@@ -110,6 +124,80 @@ def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
     info_df.write_csv(meta_path)
     return meta_path
 
+def order_columns_by_schema(lf: pl.LazyFrame) -> pl.LazyFrame:
+    schema_order = [
+        *_PL_SCHEMA.keys(),
+        *_REPLICATION_TIMING_SCHEMA.keys(),
+        *_MAPPABILITY_SCHEMA.keys(),
+        *_CHROMATIN_SCHEMA.keys(),
+        *_MICROSAT_SCHEMA.keys(),
+        *_REPMASK_SCHEMA.keys(),
+        "patient_id",
+        "sample_id",
+        "tumor_label",
+        "somatic_label",
+    ]
+    available = lf.collect_schema().names()
+    ordered = [c for c in schema_order if c in available]
+    remaining = [c for c in available if c not in ordered]
+    return lf.select(ordered + remaining)
+
+def write_single_parquet_from_chunks(
+    chunk_paths: list[Path],
+    output_path: Path,
+    patient_id: str,
+    sample_id: str,
+    mutation_file,
+    use_chromatin: bool,
+) -> None:
+    if output_path.exists():
+        output_path.unlink()
+
+    writer = None
+
+    try:
+        for i, chunk_path in enumerate(chunk_paths):
+            lf = pl.scan_parquet(chunk_path)
+
+            if use_chromatin:
+                chrom_path = chunk_path.with_suffix(".chrom.parquet")
+                if chrom_path.exists():
+                    lf_chrom = pl.scan_parquet(chrom_path)
+                    lf = pl.concat([lf, lf_chrom], how="horizontal")
+
+            lf = lf.with_columns([
+                pl.lit(patient_id).cast(pl.Utf8).alias("patient_id"),
+                pl.lit(sample_id).cast(pl.Utf8).alias("sample_id"),
+            ])
+
+            lf = add_tumor_mutation_labels(lf, mutation_file)
+            lf = order_columns_by_schema(lf)
+
+            try:
+                df = lf.collect(engine="streaming")
+            except TypeError:
+                df = lf.collect(streaming=True)
+
+            table = df.to_arrow()
+
+            if writer is None:
+                writer_schema = table.schema
+                writer = pq.ParquetWriter(
+                    output_path,
+                    writer_schema,
+                    compression="zstd",
+                )
+            else:
+                table = table.select(writer_schema.names)
+
+            writer.write_table(table)
+
+            del lf, df, table
+
+    finally:
+        if writer is not None:
+            writer.close()
+
 def main():
     args = parse_args()
     
@@ -117,6 +205,9 @@ def main():
     with open(args.config_path) as f:
         cfg = json.load(f)
     bam_config = cfg['bam']
+    
+    output_file = Path(args.output_file).resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Optional mutations file
     mutation_file = None
@@ -142,10 +233,40 @@ def main():
         if args.replication_path and Path(args.replication_path).exists()
         else None
     )
+    
+    # Optional mappability
+    mappability_path = (
+        str(Path(args.mappability_path).resolve())
+        if args.mappability_path and Path(args.mappability_path).exists()
+        else None
+    )
+
+    # Optional microsatellite
+    microsatellite_path = (
+        str(Path(args.microsatellite_path).resolve())
+        if args.microsatellite_path and Path(args.microsatellite_path).exists()
+        else None
+    )
+
+    # Optional RepeatMasker
+    repeatmasker_path = (
+        str(Path(args.repeatmasker_path).resolve())
+        if args.repeatmasker_path and Path(args.repeatmasker_path).exists()
+        else None
+    )
 
     # Optional filters
     patient_id = get_patient_id(args.bam_path)
+    sample_id = get_sample_id(args.bam_path)
     filters = load_blacklists(args, patient_id)
+    
+    # Optional BED filters
+    bed_intervals_path = (
+        str(Path(args.bed_intervals_path).resolve())
+        if args.bed_intervals_path and Path(args.bed_intervals_path).exists()
+        else None
+    )
+    bed_intervals = load_bed_intervals(bed_intervals_path) if bed_intervals_path else None
 
     processor = BamProcessor(cfg=bam_config,
                              reference_path=args.reference_path,
@@ -153,21 +274,21 @@ def main():
                              filters=filters,
                              replication_path=replication_path,
                              chromatin_path=chromatin_path,
+                             mappability_path=mappability_path,
+                             microsatellite_path=microsatellite_path,
+                             repeatmasker_path=repeatmasker_path,
+                             bed_intervals=bed_intervals,
                              n_workers=n_workers)
-    lf_data, df_info = processor.extract_data(args.bam_path)
+    chunk_paths, df_info = processor.extract_data(args.bam_path)
     
-    # Add tumor mutation labels
-    lf_data = add_tumor_mutation_labels(lf_data, mutation_file)
-
-    # Write parquet file
-    sample_id = get_sample_id(args.bam_path)
-    if args.output_file:
-        output_file = Path(args.output_file).resolve()
-    else:
-        output_file = Path(f"{sample_id}.parquet").resolve()
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    lf_data.sink_parquet(output_file, compression="zstd")
+    write_single_parquet_from_chunks(
+        chunk_paths=chunk_paths,
+        output_path=output_file,
+        patient_id=patient_id,
+        sample_id=sample_id,
+        mutation_file=mutation_file,
+        use_chromatin=chromatin_path is not None,
+    )
 
     if args.verbose:
         print(f"[INFO] Completed extraction -> {output_file}", flush=True)

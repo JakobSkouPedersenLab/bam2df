@@ -1,10 +1,21 @@
 from gwf import AnonymousTarget
 
-def make_dataset(bam_file_path, reference_path, config_path, mutation_path=None,
-                 genomic_blacklist_file=None, donor_blacklist_file=None,
-                 snp_blacklist_path=None, lowpower_blacklist_path=None,
-                 problematic_blacklist_path=None, chromatin_path=None,
-                 replication_path=None, output_file=None):
+def make_dataset(bam_file_path,
+                 reference_path,
+                 config_path,
+                 mutation_path=None,
+                 genomic_blacklist_file=None,
+                 donor_blacklist_file=None,
+                 snp_blacklist_path=None,
+                 lowpower_blacklist_path=None,
+                 problematic_blacklist_path=None,
+                 bed_intervals_path=None,
+                 chromatin_path=None,
+                 replication_path=None,
+                 mappability_path=None,
+                 microsatellite_path=None,
+                 repeatmasker_path=None,
+                 output_file=None):
     """
     Run the per-BAM extraction pipeline and write a single parquet file.
     """
@@ -22,8 +33,12 @@ def make_dataset(bam_file_path, reference_path, config_path, mutation_path=None,
         snp_blacklist_path,
         lowpower_blacklist_path,
         problematic_blacklist_path,
+        bed_intervals_path,
         chromatin_path,
-        replication_path
+        replication_path,
+        mappability_path,
+        microsatellite_path,
+        repeatmasker_path
     ]
     
     for f in optional_files:
@@ -52,8 +67,12 @@ def make_dataset(bam_file_path, reference_path, config_path, mutation_path=None,
         --snp_blacklist_path {snp_blacklist_path} \
         --lowpower_blacklist_path {lowpower_blacklist_path} \
         --problematic_blacklist_path {problematic_blacklist_path} \
+        --bed_intervals_path {bed_intervals_path} \
         --chromatin_path {chromatin_path} \
         --replication_path {replication_path} \
+        --mappability_path {mappability_path} \
+        --microsatellite_path {microsatellite_path} \
+        --repeatmasker_path {repeatmasker_path} \
         --output_file {output_file} \
         --verbose
         
