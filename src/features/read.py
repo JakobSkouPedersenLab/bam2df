@@ -387,9 +387,11 @@ def _is_snv_blacklisted(
     ref: str,
     alt: str,
 ) -> bool:
-    if not filters or not filters.snv_blacklist:
+    """True if (chrom, 0-based pos, ref, alt) is a patient germline SNV call."""
+    if not filters:
         return False
-    return (chrom, pos, ref, alt) in filters.snv_blacklist
+    calls = filters.snv_blacklist_by_chr.get(chrom)
+    return bool(calls) and (pos, ref, alt) in calls
 
 def _is_indel_blacklisted(
     filters: "FilterContext",
@@ -399,9 +401,11 @@ def _is_indel_blacklisted(
     ref: str,
     alt: str,
 ) -> bool:
-    if not filters or not filters.indel_blacklist:
+    """True if the anchored indel (0-based start, end = start + len(ref)) is a patient germline call."""
+    if not filters:
         return False
-    return (chrom, start, end, ref, alt) in filters.indel_blacklist
+    calls = filters.indel_blacklist_by_chr.get(chrom)
+    return bool(calls) and (start, end, ref, alt) in calls
 
 def _get_base_qual_at(read: pysam.AlignedSegment, qpos: int) -> Optional[int]:
     """Return base quality at query position or None."""

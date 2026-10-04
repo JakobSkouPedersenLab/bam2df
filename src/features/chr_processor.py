@@ -546,7 +546,7 @@ class ChromosomeProcessor:
                         tmp_dir=self.tmp_dir,
                         chromatin_path=self.chromatin_path,
                         config=self.config,
-                        filters=self.filters,
+                        filters=self.filters.for_chromosome(chrom) if self.filters is not None else None,
                         replication_path=self.replication_path,
                         mappability_path=self.mappability_path,
                         microsatellite_path=self.microsatellite_path,

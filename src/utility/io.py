@@ -37,16 +37,6 @@ def load_table(path: str, label: str):
         print(f"[RawDataLoader:WARN] {label} file not found at {path}, skipping.", flush=True)
         return None
 
-def load_snp_blacklist(path: str, patient_id: str):
-    if not os.path.exists(path):
-        print(f"[RawDataLoader:WARN] SNP blacklist missing for {patient_id}", flush=True)
-        return None
-    df = pl.read_csv(path, separator="\t")
-    rename_map = {c: c.lower() for c in df.columns}
-    df = df.rename(rename_map)
-    df = df.rename({"#chr": "chr"})
-    return df
-
 def load_lowpower_blacklist(path: str, patient_id: str):
     if not os.path.exists(path):
         print(f"[RawDataLoader:WARN] Low-power blacklist missing for {patient_id}", flush=True)

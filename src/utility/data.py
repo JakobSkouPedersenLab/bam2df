@@ -21,7 +21,7 @@ MAX_SEGMENTS_CACHED = 20  # Limit cache size to avoid memory blow-up in extremel
 current_cache_contig = None  # Track current contig in cache for easy invalidation
 bamfile_cache = {}  # Cache for opened BAM files
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import polars as pl
 from pathlib import Path
 
@@ -116,8 +116,27 @@ class FilterContext:
     genomic_blacklist_by_chr: Optional[dict[str, tuple]] = None
     donor_blacklist_by_chr: Optional[dict[str, tuple]] = None
     patient_blacklists_by_chr: Optional[dict[str, dict[str, tuple]]] = None
-    snv_blacklist: set[tuple[str, int, str, str]] = field(default_factory=set)
-    indel_blacklist: set[tuple[str, int, int, str, str]] = field(default_factory=set)
+    # Patient germline calls, matched on exact allele (see src/utility/variant_blacklist.py).
+    # chr -> {(start0, ref, alt)}
+    snv_blacklist_by_chr: dict[str, set[tuple[int, str, str]]] = field(default_factory=dict)
+    # chr -> {(start0, end0, ref, alt)}, VCF-style anchored alleles
+    indel_blacklist_by_chr: dict[str, set[tuple[int, int, str, str]]] = field(default_factory=dict)
+
+    def for_chromosome(self, chrom: str) -> "FilterContext":
+        """
+        Copy holding only `chrom`'s germline calls.
+
+        Each chromosome runs in its own spawned process, which receives a pickled copy of the
+        context; sending only one chromosome's calls avoids copying a genome's worth of variants
+        into every worker.
+        """
+        return replace(
+            self,
+            snv_blacklist_by_chr={chrom: self.snv_blacklist_by_chr[chrom]}
+            if chrom in self.snv_blacklist_by_chr else {},
+            indel_blacklist_by_chr={chrom: self.indel_blacklist_by_chr[chrom]}
+            if chrom in self.indel_blacklist_by_chr else {},
+        )
 
 @dataclass
 class MicrosatelliteLookup:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import polars as pl
 import pyBigWig
+import pysam
 import pickle
 import pyarrow.parquet as pq
 
@@ -17,7 +18,8 @@ from src.utility.sample import get_sample_id
 from src.features.bam_processor import BamProcessor
 
 from src.utility.config import validate_bam_config
-from src.utility.io import (load_bed, load_bed_intervals, load_table, load_snp_blacklist, load_lowpower_blacklist,
+from src.utility.variant_blacklist import count_snv_reference_mismatches, load_variant_blacklist
+from src.utility.io import (load_bed, load_bed_intervals, load_table, load_lowpower_blacklist,
                             load_problematic_blacklist, prepare_blacklist_arrays, split_by_chr)
 from src.utility.sample import get_patient_id
 
@@ -28,6 +30,7 @@ from src.features.constants import (
     _CHROMATIN_SCHEMA,
     _MICROSAT_SCHEMA,
     _REPMASK_SCHEMA,
+    _VALID_CHROMS,
 )
 
 n_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
@@ -70,13 +73,11 @@ def load_blacklists(args, patient_id: str):
     donor_by_chr = prepare_blacklist_arrays(split_by_chr(donor_df)) \
                    if donor_df is not None else None
 
-    patient_bl = {}
+    snv_by_chr, indel_by_chr = {}, {}
     if args.snp_blacklist_path:
-        snp_df = load_snp_blacklist(args.snp_blacklist_path, patient_id)
-        patient_bl["snp_blacklist"] = (
-            prepare_blacklist_arrays(split_by_chr(snp_df))
-            if snp_df is not None else None
-        )
+        snv_by_chr, indel_by_chr = load_germline_calls(args.snp_blacklist_path, args.reference_path)
+
+    patient_bl = {}
     if args.lowpower_blacklist_path:
         lp_df = load_lowpower_blacklist(args.lowpower_blacklist_path, patient_id)
         patient_bl["lowpower_blacklist"] = (
@@ -98,7 +99,40 @@ def load_blacklists(args, patient_id: str):
         genomic_blacklist_by_chr=genomic_by_chr,
         donor_blacklist_by_chr=donor_by_chr,
         patient_blacklists_by_chr=patient_blacklists_by_chr,
+        snv_blacklist_by_chr=snv_by_chr,
+        indel_blacklist_by_chr=indel_by_chr,
     )
+
+# Up to this many germline SNVs are checked against the reference; above this mismatch fraction
+# the calls file is assumed to use a different coordinate convention. Correct 0-based calls
+# mismatch only where the caller and the FASTA disagree (rare); an off-by-one shift mismatches ~3/4.
+_REF_CHECK_MAX_SNVS = 10_000
+_REF_CHECK_MAX_MISMATCH_FRACTION = 0.05
+
+def load_germline_calls(path: str, reference_path: str):
+    """
+    Load the patient's germline calls as exact-allele SNV and indel blacklists, restricted to the
+    chromosomes bam2df processes, and verify their coordinates against the reference.
+    """
+    snv_by_chr, indel_by_chr, counts = load_variant_blacklist(path)
+    snv_by_chr = {c: v for c, v in snv_by_chr.items() if c in _VALID_CHROMS}
+    indel_by_chr = {c: v for c, v in indel_by_chr.items() if c in _VALID_CHROMS}
+    print(f"[INFO] SNP blacklist {path}: {counts}; "
+          f"kept on processed chromosomes: snv={sum(map(len, snv_by_chr.values())):,} "
+          f"indel={sum(map(len, indel_by_chr.values())):,}", flush=True)
+
+    with pysam.FastaFile(reference_path) as fasta:
+        n_mismatched, n_checked = count_snv_reference_mismatches(
+            snv_by_chr,
+            fetch_ref_base=lambda chrom, pos0: fasta.fetch(chrom, pos0, pos0 + 1),
+            max_checks=_REF_CHECK_MAX_SNVS,
+        )
+    if n_checked and n_mismatched / n_checked > _REF_CHECK_MAX_MISMATCH_FRACTION:
+        raise ValueError(
+            f"SNP blacklist {path}: REF disagrees with {reference_path} at {n_mismatched:,} of "
+            f"{n_checked:,} checked SNVs. START must be 0-based on the same assembly as the reference."
+        )
+    return snv_by_chr, indel_by_chr
 
 def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
     """

@@ -106,9 +106,29 @@ Note: `--output_file` is currently required in practice because the script calls
 |---|---|
 | `--genomic_blacklist_file` | BED file with genomic regions to exclude. |
 | `--donor_blacklist_file` | Donor-level blacklist table. |
-| `--snp_blacklist_path` | SNP blacklist used to exclude patient-specific SNP sites. |
+| `--snp_blacklist_path` | Patient germline variant calls. Observations matching a call's exact allele are excluded (see below). |
 | `--lowpower_blacklist_path` | Low-power or low-coverage regions to exclude. |
 | `--problematic_blacklist_path` | Problematic regions to exclude. |
+
+#### SNP blacklist
+
+The SNP blacklist removes the patient's own germline variants, matched on **exact allele**: an
+SNV observation is dropped only if its chromosome, position, REF and ALT all match a call, and
+an indel only if its anchored REF and ALT match. A different base at a germline site, which is a
+sequencing error rather than the germline allele, is still extracted.
+
+The file is tab-separated with a header containing at least `CHR`, `START`, `REF` and `ALT`
+(case-insensitive, an optional leading `#`, e.g. `#CHR`):
+
+- `START` is **0-based**. `END`, if present, is not used.
+- `REF`/`ALT` are VCF-style; indels are anchored on the preceding reference base
+  (insertion `C → CTT`, deletion `GAA → G`). `ALT` may list several alleles, comma-separated.
+- Multi-base substitutions, complex indels and `*`/`.` alleles can never match a bam2df
+  observation; they are counted in the log and skipped.
+
+At startup, up to 10,000 SNV REF alleles are checked against the reference FASTA. If more than
+5% disagree, which is what a 1-based `START` or a different assembly produces, the run fails.
+A missing SNP blacklist file is an error.
 
 ### BED interval restriction
 
