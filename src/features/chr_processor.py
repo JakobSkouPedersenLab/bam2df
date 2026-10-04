@@ -72,7 +72,7 @@ def process_chromosome(
     stats = ChromStats(chrom=chrom)
     
     min_mapq = cfg.get("min_mapq", 60)
-    min_bq = cfg.get("min_bq", 37)
+    min_bq = cfg["min_base_quality"]  # validated by validate_bam_config
     chunk_size = cfg.get("chunk_size", 100000)
     use_paired_reads = cfg.get("use_paired_reads", True)
     

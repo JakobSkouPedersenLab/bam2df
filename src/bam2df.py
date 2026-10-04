@@ -16,6 +16,7 @@ from src.utility.data import FilterContext
 from src.utility.sample import get_sample_id
 from src.features.bam_processor import BamProcessor
 
+from src.utility.config import validate_bam_config
 from src.utility.io import (load_bed, load_bed_intervals, load_table, load_snp_blacklist, load_lowpower_blacklist,
                             load_problematic_blacklist, prepare_blacklist_arrays, split_by_chr)
 from src.utility.sample import get_patient_id
@@ -205,7 +206,8 @@ def main():
     with open(args.config_path) as f:
         cfg = json.load(f)
     bam_config = cfg['bam']
-    
+    validate_bam_config(bam_config)
+
     output_file = Path(args.output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
 

@@ -276,7 +276,7 @@ Example:
 |---|---|
 | `context_flank` | Number of flanking bases to include around the observation. |
 | `min_len` / `max_len` | Minimum and maximum read or fragment length allowed. |
-| `min_base_quality` | Minimum base quality required at the observation position. |
+| `min_base_quality` | Required. A position is scanned only where both mates reach this base quality. The former key `min_bq` is rejected. |
 | `min_mapq` | Minimum mapping quality required. |
 | `bin_size_bp` | Bin size in base pairs used for genomic binning or aggregation. |
 | `pre_sample_seed` | Random seed used for deterministic subsampling. |
@@ -306,6 +306,15 @@ SLURM_CPUS_PER_TASK=8 python ./src/bam2df.py \
 ```
 
 If `SLURM_CPUS_PER_TASK` is not set, the pipeline defaults to one worker.
+
+---
+
+## Tests
+
+```bash
+poetry install --with dev
+poetry run pytest
+```
 
 ---
 
