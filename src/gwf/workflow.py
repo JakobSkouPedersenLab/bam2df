@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import os
-import pickle
 from pathlib import Path
 from typing import List
 from gwf import Workflow
@@ -37,7 +35,7 @@ gwf = Workflow()
 
 config_path = "../../config.json"
 
-bam_files = "/path_to_a_textfile_with_bam_paths/"
+bam_file_list_path = "/path/to/bam_paths.txt"  # text file listing one BAM path per line
 
 # Site-specific settings. Fill these in before running; they are placeholders so that no
 # real paths or cluster account names end up in version control.
@@ -52,24 +50,19 @@ bed_intervals_path = "/path/to/bed_intervals"
 chromatin_path = "/path/to/chromatin"
 replication_path = "/path/to/replication_timing"
 mappability_path = "/path/to/mappability"
-microsatellite_path = "path/to/microsatellite"
+microsatellite_path = "/path/to/microsatellite"
 repeatmasker_path = "/path/to/repeatmasker"
 
-samplesheet_train = read_text_file(bam_files)
+bam_paths = read_text_file(bam_file_list_path)
 
 processed_samples: set[str] = set()
 
 # Prepare output directory once
-output_dir = "../../data"
+output_dir = Path("../../data")
 output_dir.mkdir(parents=True, exist_ok=True)
 
-# Remove metadata file once at job start
-metadata_file = output_dir / "metadata.csv"
-if metadata_file.exists():
-    metadata_file.unlink()
-
 # Process BAM files
-for bam_path in bam_files:
+for bam_path in bam_paths:
     
     patient_id = get_patient_id(bam_path)
     sample_id = get_sample_id(bam_path)
@@ -80,8 +73,9 @@ for bam_path in bam_files:
     # Set output file
     output_file = output_dir / f"{sample_id}.parquet"
     
-    # Construct mutation file path from a .pkl file
-    mutation_path = "/path_to_patient_mutation_catalog.pkl"
+    # Mutation catalog for this patient, if one is available. Substitute `patient_id`
+    # into the path here if the catalogs are stored per patient.
+    mutation_path = Path("/path_to_patient_mutation_catalog.pkl")
     mutation_file = str(mutation_path) if mutation_path.exists() else None
                 
     # Resolve patient-specific SNP blacklist
