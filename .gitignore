@@ -27,8 +27,9 @@ share/python-wheels/
 MANIFEST
 
 # Data
-/data/*.csv
-/data/*.parquet
+# Ignore the whole directory: the pipeline writes patient-derived parquet, CSV, pickle
+# and bedgraph outputs here, and none of it belongs in the repository.
+/data/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
