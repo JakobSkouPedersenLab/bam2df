@@ -27,27 +27,31 @@ def make_dataset(bam_file_path,
         reference_path,
         config_path,
     ]
-    
+
+    optional_paths = {
+        "--mutation_path": mutation_path,
+        "--genomic_blacklist_file": genomic_blacklist_file,
+        "--donor_blacklist_file": donor_blacklist_file,
+        "--snp_blacklist_path": snp_blacklist_path,
+        "--lowpower_blacklist_path": lowpower_blacklist_path,
+        "--problematic_blacklist_path": problematic_blacklist_path,
+        "--bed_intervals_path": bed_intervals_path,
+        "--chromatin_path": chromatin_path,
+        "--replication_path": replication_path,
+        "--mappability_path": mappability_path,
+        "--microsatellite_path": microsatellite_path,
+        "--repeatmasker_path": repeatmasker_path,
+    }
+
     # Add each optional file only if present
-    optional_files = [
-        mutation_path,
-        genomic_blacklist_file,
-        donor_blacklist_file,
-        snp_blacklist_path,
-        lowpower_blacklist_path,
-        problematic_blacklist_path,
-        bed_intervals_path,
-        chromatin_path,
-        replication_path,
-        mappability_path,
-        microsatellite_path,
-        repeatmasker_path
-    ]
-    
-    for f in optional_files:
+    for f in optional_paths.values():
         if f:
             inputs.append(f)
-    
+
+    optional_args = dict(optional_paths)
+    optional_args["--sample_id"] = sample_id
+    optional_args["--patient_id"] = patient_id
+
     outputs = [output_file]
     options = dict(cores="12", memory="50g", walltime="06:00:00")
 
@@ -55,36 +59,25 @@ def make_dataset(bam_file_path,
     if account:
         options["account"] = account
 
+    # Only pass arguments that are set: an empty one would render as a bare flag and
+    # argparse would take the following flag to be its value.
+    argv = [bam_file_path, "$TEMP/ref.fa", config_path]
+    argv += [f"{flag} {value}" for flag, value in optional_args.items() if value]
+    argv += [f"--output_file {output_file}", "--verbose"]
+    args_block = " \\\n        ".join(argv)
+
     spec = f"""
     set -euo pipefail
 
     mkdir -p $TEMP/
-    
+
     # Copy reference to scratch
     cp {reference_path} $TEMP/ref.fa
     cp {reference_path}.fai $TEMP/ref.fa.fai
-    
-    python ../src/bam2df.py \
-        {bam_file_path} \
-        $TEMP/ref.fa \
-        {config_path} \
-        --mutation_path {mutation_path} \
-        --genomic_blacklist_file {genomic_blacklist_file} \
-        --donor_blacklist_file {donor_blacklist_file} \
-        --snp_blacklist_path {snp_blacklist_path} \
-        --lowpower_blacklist_path {lowpower_blacklist_path} \
-        --problematic_blacklist_path {problematic_blacklist_path} \
-        --bed_intervals_path {bed_intervals_path} \
-        --chromatin_path {chromatin_path} \
-        --replication_path {replication_path} \
-        --mappability_path {mappability_path} \
-        --microsatellite_path {microsatellite_path} \
-        --repeatmasker_path {repeatmasker_path} \
-        --sample_id {sample_id} \
-        --patient_id {patient_id} \
-        --output_file {output_file} \
-        --verbose
-        
+
+    python ../src/bam2df.py \\
+        {args_block}
+
     rm -f $TEMP/ref.fa $TEMP/ref.fa.fai
     """
 
