@@ -153,15 +153,15 @@ A missing SNP blacklist file is an error.
 For an output path such as:
 
 ```bash
---output_file /path/to/output/C05638.parquet
+--output_file /path/to/output/sample.parquet
 ```
 
 the pipeline writes:
 
 ```text
 /path/to/output/
-  C05638.parquet
-  C05638_metadata.csv
+  sample.parquet
+  sample_metadata.csv
 ```
 
 The parquet file contains the extracted read-level observations and optional context features. The metadata CSV contains per-file extraction statistics and is written beside the parquet file.

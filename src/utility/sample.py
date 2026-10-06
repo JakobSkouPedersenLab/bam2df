@@ -6,14 +6,14 @@ def get_sample_id(path: str) -> str:
     Extract sample ID from BAM or VCF path.
     
     Supports patterns like:
-      - C05640/C60A05640D
-      - C05640/C60T05640D
-      - C05631/C55M05631D
+      - C00001/C00A00001D
+      - C00001/C00T00001D
+      - C00002/C00M00002D
       - donor### (case-insensitive → normalized to Donor###)
     """
     filename = os.path.basename(path)
 
-    # Case 1: combined patient_sample pattern e.g. C05640_C60A05640D
+    # Case 1: combined patient_sample pattern e.g. C00001_C00A00001D
     m0 = re.search(r"(C\d{5})_+(C\d+[A-Z]\d{5}D?)", filename)
     if m0:
         return m0.group(2)
