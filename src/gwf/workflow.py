@@ -35,11 +35,10 @@ gwf = Workflow()
 
 config_path = "../../config.json"
 
-bam_file_list_path = "/path/to/bam_paths.txt"  # text file listing one BAM path per line
-
 # Site-specific settings. Fill these in before running; they are placeholders so that no
 # real paths or cluster account names end up in version control.
 slurm_account = ""
+bam_file_list_path = "/path/to/bam_paths.txt"  # text file listing one BAM path per line
 reference_file = "/path/to/reference.fasta"
 genomic_blacklist_file = "/path/to/genomic_blacklist.bed"
 donor_blacklist_file = "/path/to/donor_blacklist.tsv"
@@ -150,6 +149,8 @@ for bam_path in bam_paths:
         "mappability_path": mappability_path,
         "microsatellite_path": microsatellite_path,
         "repeatmasker_path": repeatmasker_path,
+        "sample_id": sample_id,
+        "patient_id": patient_id,
         "account": slurm_account,
         "output_file": str(output_file)
     }

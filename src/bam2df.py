@@ -14,14 +14,13 @@ from scipy.sparse import csr_matrix, load_npz
 
 from src.features.labeling import add_tumor_mutation_labels
 from src.utility.data import FilterContext
-from src.utility.sample import get_sample_id
 from src.features.bam_processor import BamProcessor
 
 from src.utility.config import validate_bam_config
 from src.utility.variant_blacklist import count_snv_reference_mismatches, load_variant_blacklist
 from src.utility.io import (load_bed, load_bed_intervals, load_table, load_lowpower_blacklist,
                             load_problematic_blacklist, prepare_blacklist_arrays, split_by_chr)
-from src.utility.sample import get_patient_id
+from src.utility.sample import resolve_patient_id, resolve_sample_id
 
 from src.features.constants import (
     _PL_SCHEMA,
@@ -55,6 +54,14 @@ def parse_args():
     parser.add_argument("--microsatellite_path", type=str, default=None)
     parser.add_argument("--repeatmasker_path", type=str, default=None)
     
+    parser.add_argument("--sample_id", type=str, default=None,
+                        help="Sample ID to label the output with. Inferred from the BAM path "
+                             "if omitted, which only works for the naming scheme in "
+                             "src/utility/sample.py.")
+    parser.add_argument("--patient_id", type=str, default=None,
+                        help="Patient ID to label the output with. Inferred from the BAM path "
+                             "if omitted, falling back to the sample ID.")
+
     parser.add_argument("--output_file", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
 
@@ -134,18 +141,15 @@ def load_germline_calls(path: str, reference_path: str):
         )
     return snv_by_chr, indel_by_chr
 
-def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path):
+def write_metadata_per_file(info_df: pl.DataFrame, output_file: Path, sample_id: str):
     """
     Write metadata for a single BAM output.
     Metadata file is written beside the parquet file:
-        <sample_id>_metadata.csv
+        <output stem>_metadata.csv
     """
     out_dir = output_file.parent
-    sample_id = output_file.stem
-    meta_path = out_dir / f"{sample_id}_metadata.csv"
-    
-    sample_id = get_sample_id(str(output_file))
-    
+    meta_path = out_dir / f"{output_file.stem}_metadata.csv"
+
     # Add sample_id column
     info_df = info_df.with_columns(
         pl.lit(sample_id).alias("sample_id")
@@ -291,9 +295,11 @@ def main():
         else None
     )
 
+    # Sample and patient identity: explicit arguments win, the BAM path is the fallback
+    sample_id = resolve_sample_id(args.bam_path, args.sample_id)
+    patient_id = resolve_patient_id(args.bam_path, args.patient_id, sample_id)
+
     # Optional filters
-    patient_id = get_patient_id(args.bam_path)
-    sample_id = get_sample_id(args.bam_path)
     filters = load_blacklists(args, patient_id)
     
     # Optional BED filters
@@ -314,6 +320,8 @@ def main():
                              microsatellite_path=microsatellite_path,
                              repeatmasker_path=repeatmasker_path,
                              bed_intervals=bed_intervals,
+                             patient_id=patient_id,
+                             sample_id=sample_id,
                              n_workers=n_workers)
     chunk_paths, df_info = processor.extract_data(args.bam_path)
     
@@ -330,7 +338,7 @@ def main():
         print(f"[INFO] Completed extraction -> {output_file}", flush=True)
         
     # Metadata CSV beside parquet file
-    meta_path = write_metadata_per_file(df_info, output_file)
+    meta_path = write_metadata_per_file(df_info, output_file, sample_id)
 
     if args.verbose:
         print(f"[INFO] Metadata appended -> {meta_path}", flush=True)

@@ -15,6 +15,8 @@ def make_dataset(bam_file_path,
                  mappability_path=None,
                  microsatellite_path=None,
                  repeatmasker_path=None,
+                 sample_id=None,
+                 patient_id=None,
                  account=None,
                  output_file=None):
     """
@@ -78,6 +80,8 @@ def make_dataset(bam_file_path,
         --mappability_path {mappability_path} \
         --microsatellite_path {microsatellite_path} \
         --repeatmasker_path {repeatmasker_path} \
+        --sample_id {sample_id} \
+        --patient_id {patient_id} \
         --output_file {output_file} \
         --verbose
         

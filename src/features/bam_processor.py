@@ -3,7 +3,6 @@ from typing import Optional, Tuple
 import polars as pl
 
 from src.features.chr_processor import ChromosomeProcessor
-from src.utility.sample import get_patient_id, get_sample_id
 from src.utility.data import ChromStats, FilterContext, GenomeStats
 
 import pyBigWig
@@ -23,6 +22,8 @@ class BamProcessor:
                  repeatmasker_path: str = None,
                  chromatin_path: str = None,
                  bed_intervals: dict[str, list[tuple[int, int]]] = None,
+                 patient_id: str = None,
+                 sample_id: str = None,
                  n_workers: int = 1):
         
         self.cfg = cfg
@@ -35,6 +36,8 @@ class BamProcessor:
         self.repeatmasker_path = repeatmasker_path
         self.chromatin_path = chromatin_path
         self.bed_intervals = bed_intervals
+        self.patient_id = patient_id
+        self.sample_id = sample_id
         self.n_workers = n_workers
 
     def extract_data(self, bam_path: str) -> Tuple[list[Path], pl.DataFrame]:
@@ -64,6 +67,8 @@ class BamProcessor:
             reference_path=self.reference_path,
             mutation_types=mutation_types,
             bed_intervals=self.bed_intervals,
+            patient_id=self.patient_id,
+            sample_id=self.sample_id,
         )
         
         if not chunk_paths:

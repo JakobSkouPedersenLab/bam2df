@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import os
 import re
 
 def get_sample_id(path: str) -> str:
     """
     Extract sample ID from BAM or VCF path.
-    
+
+    This only recognises the naming scheme the pipeline was written against, so it is a
+    fallback: pass the ID explicitly (`--sample_id`) for files named any other way.
+
     Supports patterns like:
       - C00001/C00A00001D
       - C00001/C00T00001D
@@ -32,7 +37,12 @@ def get_sample_id(path: str) -> str:
     raise ValueError(f"Could not find sample ID in: {path}")
 
 def get_patient_id(path: str) -> str:
-    """Extract patient ID from BAM or VCF path."""
+    """
+    Extract patient ID from BAM or VCF path.
+
+    Like `get_sample_id`, this is a fallback for one specific naming scheme; pass the ID
+    explicitly (`--patient_id`) otherwise.
+    """
     sample_id = get_sample_id(path)
     filename = os.path.basename(path)
 
@@ -58,3 +68,27 @@ def get_patient_id(path: str) -> str:
         return f"C{m_pat.group(1)}"
 
     return sample_id
+
+def resolve_sample_id(path: str, sample_id: str | None = None) -> str:
+    """
+    The sample ID to label this BAM with: the one given on the command line if there is
+    one, otherwise parsed from the path.
+    """
+    if sample_id:
+        return sample_id
+    return get_sample_id(path)
+
+def resolve_patient_id(path: str, patient_id: str | None = None, sample_id: str | None = None) -> str:
+    """
+    The patient ID to label this BAM with: the one given on the command line if there is
+    one, otherwise parsed from the path, otherwise the sample ID — one sample is taken to
+    be one patient unless told otherwise.
+    """
+    if patient_id:
+        return patient_id
+    try:
+        return get_patient_id(path)
+    except ValueError:
+        if sample_id:
+            return sample_id
+        raise

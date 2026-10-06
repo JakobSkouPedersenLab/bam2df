@@ -24,7 +24,6 @@ from src.features.extractors import extract_read_features
 from src.features.constants import (_CHROMATIN_SCHEMA, _MAPPABILITY_SCHEMA, _MICROSAT_SCHEMA, _PL_SCHEMA, _REPLICATION_TIMING_SCHEMA, _REPMASK_SCHEMA, _VALID_CHROMS,
                                     OBS_DELETION, OBS_INSERTION, OBS_MATCH, OBS_SNV)
 from src.utility.data import ChromStats, FilterContext, GenomeStats, MicrosatelliteLookup, ReferenceCache, RepeatMaskerLookup, get_open_indices, rows_to_polars
-from src.utility.sample import get_patient_id, get_sample_id
 from src.utility.io import get_hpc_tmp_dir, load_chr_mask, load_microsatellites_for_chrom, load_repeatmasker_for_chrom
 
 def process_chromosome(
@@ -43,6 +42,8 @@ def process_chromosome(
     mappability_bw: pyBigWig.pyBigWig | None,
     microsatellite_lookup: MicrosatelliteLookup | None,
     repeatmasker_lookup: RepeatMaskerLookup | None,
+    patient_id: str,
+    sample_id: str,
 ) -> Optional[tuple[list[Path], ChromStats]]:
     """
     Process one chromosome interval [start, end) and return chunk paths + ChromStats.
@@ -59,8 +60,6 @@ def process_chromosome(
     
     cfg = config
     ctx_flank = cfg["context_flank"]
-    patient_id = get_patient_id(bam_path)
-    sample_id = get_sample_id(bam_path)
     
     chunk_paths: list[Path] = []
     chunk_idx = 0
@@ -348,7 +347,9 @@ def _process_chromosome_worker(
     repeatmasker_path: str = None,
     chromatin_path: str = None,
     verbose: bool = False,
-    bed_intervals: list[tuple[int, int]] = None, 
+    bed_intervals: list[tuple[int, int]] = None,
+    patient_id: str = None,
+    sample_id: str = None,
 ) -> Optional[tuple[list[Path], ChromStats]]:
     """
     Worker entry point for per-chromosome feature extraction.
@@ -411,6 +412,8 @@ def _process_chromosome_worker(
                     mappability_bw=mappability_bw,
                     microsatellite_lookup=microsatellite_lookup,
                     repeatmasker_lookup=repeatmasker_lookup,
+                    patient_id=patient_id,
+                    sample_id=sample_id,
                     verbose=verbose,
                 ) 
                 
@@ -516,6 +519,8 @@ class ChromosomeProcessor:
                 reference_path: str,
                 mutation_types: list[str],
                 bed_intervals: dict[str, list[tuple[int, int]]] = None,
+                patient_id: str = None,
+                sample_id: str = None,
     ) -> tuple[pl.LazyFrame, GenomeStats]:
 
         start_time = time.perf_counter()
@@ -553,6 +558,8 @@ class ChromosomeProcessor:
                         repeatmasker_path=self.repeatmasker_path,
                         verbose=self.verbose,
                         bed_intervals=chrom_bed_intervals,
+                        patient_id=patient_id,
+                        sample_id=sample_id,
                     )
                 )
 

@@ -60,6 +60,8 @@ python ./src/bam2df.py \
     --mappability_path /path/to/mappability.bw \
     --microsatellite_path /path/to/microsatellites.bed \
     --repeatmasker_path /path/to/repeatmasker.bed \
+    --sample_id SAMPLE001 \
+    --patient_id PATIENT001 \
     --verbose
 ```
 
@@ -93,6 +95,19 @@ Note: `--output_file` is currently required in practice because the script calls
 |---|---|
 | `--output_file` | Output parquet file. Parent directories are created automatically. |
 | `--verbose` | Enable detailed logging. |
+
+### Sample identity
+
+| Argument | Description |
+|---|---|
+| `--sample_id` | Sample ID written to the `sample_id` column and the metadata CSV. |
+| `--patient_id` | Patient ID written to the `patient_id` column and used to report per-patient blacklists. |
+
+Both are optional. If omitted, they are inferred from the BAM path by the regexes in
+`src/utility/sample.py`, which only recognise one specific naming scheme — pass them
+explicitly for BAMs named any other way, otherwise extraction fails with
+`Could not find sample ID in: ...`. If `--patient_id` is omitted and the path cannot be
+parsed, the sample ID is used, treating one sample as one patient.
 
 ### Mutation labeling
 
@@ -164,7 +179,8 @@ the pipeline writes:
   sample_metadata.csv
 ```
 
-The parquet file contains the extracted read-level observations and optional context features. The metadata CSV contains per-file extraction statistics and is written beside the parquet file.
+The parquet file contains the extracted read-level observations and optional context features. The metadata CSV contains per-file extraction statistics, is named after the output file's
+stem, and is written beside the parquet file.
 
 The output table also includes:
 

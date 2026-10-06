@@ -9,7 +9,6 @@ import pysam
 import os
 
 from src.features.filters import _read_filters
-from src.utility.sample import get_patient_id, get_sample_id
 from scipy.sparse import csr_matrix
 
 import pyBigWig
