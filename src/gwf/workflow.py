@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
 import os
 import pickle
 from pathlib import Path
@@ -37,17 +36,18 @@ def resolve_patient_dir(base: Path, patient_id: str) -> Path | None:
 gwf = Workflow()
 
 config_path = "../../config.json"
-with open(config_path) as f:
-    params = json.load(f)
 
 bam_files = "/path_to_a_textfile_with_bam_paths/"
 
-reference_file = params["c2i"]["reference_file"]
-genomic_blacklist_file = params["c2i"]["genomic_blacklist_file"]
-donor_blacklist_file = params["c2i"]["donor_blacklist_file"]
-snp_blacklist_path = params["c2i"]["snp_blacklist_path"]
-lowpower_blacklist_path = params["c2i"]["lowpower_blacklist_path"]
-problematic_blacklist_path = params["c2i"]["problematic_blacklist_path"]
+# Site-specific settings. Fill these in before running; they are placeholders so that no
+# real paths or cluster account names end up in version control.
+slurm_account = ""
+reference_file = "/path/to/reference.fasta"
+genomic_blacklist_file = "/path/to/genomic_blacklist.bed"
+donor_blacklist_file = "/path/to/donor_blacklist.tsv"
+snp_blacklist_path = "/path/to/snp_blacklists"
+lowpower_blacklist_path = "/path/to/lowpower_blacklists"
+problematic_blacklist_path = "/path/to/problematic_blacklists"
 bed_intervals_path = "/path/to/bed_intervals"
 chromatin_path = "/path/to/chromatin"
 replication_path = "/path/to/replication_timing"
@@ -156,6 +156,7 @@ for bam_path in bam_files:
         "mappability_path": mappability_path,
         "microsatellite_path": microsatellite_path,
         "repeatmasker_path": repeatmasker_path,
+        "account": slurm_account,
         "output_file": str(output_file)
     }
 

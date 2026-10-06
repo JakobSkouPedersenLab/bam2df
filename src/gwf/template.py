@@ -15,6 +15,7 @@ def make_dataset(bam_file_path,
                  mappability_path=None,
                  microsatellite_path=None,
                  repeatmasker_path=None,
+                 account=None,
                  output_file=None):
     """
     Run the per-BAM extraction pipeline and write a single parquet file.
@@ -46,7 +47,11 @@ def make_dataset(bam_file_path,
             inputs.append(f)
     
     outputs = [output_file]
-    options = dict(cores="12", memory="50g", walltime="06:00:00", account="c2i-colon")
+    options = dict(cores="12", memory="50g", walltime="06:00:00")
+
+    # Cluster account, where the backend needs one. The caller supplies it; none is hardcoded.
+    if account:
+        options["account"] = account
 
     spec = f"""
     set -euo pipefail
