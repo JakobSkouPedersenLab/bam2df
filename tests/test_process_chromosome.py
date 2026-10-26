@@ -144,3 +144,14 @@ def test_single_read_mode_extracts_each_read(tmp_path: Path):
     assert stats.n_reads == 2 and stats.n_invalid_fragments == 0
 
 
+
+def test_match_subsampling_is_reproducible(tmp_path: Path):
+    bam, fasta, _ = _write_inputs(tmp_path, read1_mismatch=105, read2_mismatch=130)
+    cfg = _config(mutation_types=["match"], n_match_sample=5, pre_sample_seed=3)
+
+    first, _ = _run(bam, fasta, tmp_path / "run1", cfg)
+    second, _ = _run(bam, fasta, tmp_path / "run2", cfg)
+
+    first_pos = _rows(first)["genomic_pos"].to_list()
+    assert len(first_pos) == 5
+    assert first_pos == _rows(second)["genomic_pos"].to_list()

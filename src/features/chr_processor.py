@@ -67,7 +67,10 @@ def process_chromosome(
     rows_chunk: list[dict] = []
     worker_reservoir: list[dict] = []
     seen = 0
-    
+    # Seeded per interval so match subsampling is reproducible. A str seed is hashed with
+    # SHA-512 by random.Random, so it is the same in every process and run.
+    rng = random.Random(f"{config.get('pre_sample_seed', 0)}:{chrom}:{start}:{end}")
+
     stats = ChromStats(chrom=chrom)
     
     min_mapq = cfg.get("min_mapq", 60)
@@ -134,7 +137,7 @@ def process_chromosome(
                 if len(worker_reservoir) < n_match_sample:
                     worker_reservoir.append(row)
                 else:
-                    j = random.randrange(seen)
+                    j = rng.randrange(seen)
                     if j < n_match_sample:
                         worker_reservoir[j] = row
             else:

@@ -315,7 +315,7 @@ Example:
 | `min_base_quality` | Required. A position is scanned only where both mates reach this base quality. The former key `min_bq` is rejected. |
 | `min_mapq` | Minimum mapping quality required. |
 | `bin_size_bp` | Bin size in base pairs used for genomic binning or aggregation. |
-| `pre_sample_seed` | Random seed used for deterministic subsampling. |
+| `pre_sample_seed` | Seed for the subsampling of matching bases (`n_match_sample`), so the same inputs give the same sample. |
 | `n_match_sample` | Number of matching/reference bases to subsample. Use `0` to keep all configured observations. |
 | `mutation_types` | Mutation or observation classes to extract, for example `mismatch` and `indel`. |
 | `use_paired_reads` | If true, extract from the overlap of each read pair, scanning only positions where both mates reach `min_base_quality`. If false, extract from each read on its own, using `abs(TLEN)` as the fragment length; reads with `TLEN` 0 are skipped. |
