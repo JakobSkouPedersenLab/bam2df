@@ -318,7 +318,7 @@ Example:
 | `pre_sample_seed` | Random seed used for deterministic subsampling. |
 | `n_match_sample` | Number of matching/reference bases to subsample. Use `0` to keep all configured observations. |
 | `mutation_types` | Mutation or observation classes to extract, for example `mismatch` and `indel`. |
-| `use_paired_reads` | If true, use paired-read information during extraction. |
+| `use_paired_reads` | If true, extract from the overlap of each read pair, scanning only positions where both mates reach `min_base_quality`. If false, extract from each read on its own, using `abs(TLEN)` as the fragment length; reads with `TLEN` 0 are skipped. |
 | `chunk_size` | Number of reads processed per chunk for streaming and memory control. |
 
 ---

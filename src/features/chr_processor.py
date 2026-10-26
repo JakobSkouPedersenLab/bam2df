@@ -116,6 +116,33 @@ def process_chromosome(
         chunk_idx += 1
         rows_chunk.clear()
 
+    def consume_rows(rows_iter) -> None:
+        """Count each row by type and route it to the chunk, or to the match reservoir."""
+        nonlocal seen
+
+        for row in rows_iter:
+            t = row["obs_type"]
+            if t == OBS_SNV:
+                stats.n_mismatches += 1
+            elif t == OBS_MATCH:
+                stats.n_matches += 1
+            elif t in [OBS_INSERTION, OBS_DELETION]:
+                stats.n_indels += 1
+
+            if t == OBS_MATCH and n_match_sample > 0:
+                seen += 1
+                if len(worker_reservoir) < n_match_sample:
+                    worker_reservoir.append(row)
+                else:
+                    j = random.randrange(seen)
+                    if j < n_match_sample:
+                        worker_reservoir[j] = row
+            else:
+                rows_chunk.append(row)
+
+            if len(rows_chunk) >= chunk_size:
+                flush_chunk(schema)
+
     def read_overlaps_interval(read: pysam.AlignedSegment, region_start: int, region_end: int) -> bool:
         """
         Fast coarse filter: keep only reads with any reference overlap with [region_start, region_end).
@@ -231,42 +258,34 @@ def process_chromosome(
 
             stats.n_total += n_opp
             stats.n_reads += 1
-                
-            for row in rows_iter:
-                t = row["obs_type"]
-                if t == OBS_SNV:
-                    stats.n_mismatches += 1
-                elif t == OBS_MATCH:
-                    stats.n_matches += 1
-                elif t in [OBS_INSERTION, OBS_DELETION]:
-                    stats.n_indels += 1
-                    
-                if t == OBS_MATCH and n_match_sample > 0:
-                    seen += 1
-                    if len(worker_reservoir) < n_match_sample:
-                        worker_reservoir.append(row)
-                    else:
-                        j = random.randrange(seen)
-                        if j < n_match_sample:
-                            worker_reservoir[j] = row
-                else:
-                    rows_chunk.append(row)
-                    
-                if len(rows_chunk) >= chunk_size:
-                    flush_chunk(schema)
+            consume_rows(rows_iter)
         else:
-            highqual_positions = _high_quality_single_read(read, min_bq)
-            frag_len = read.template_length
-            start_ctx, end_ctx = _extract_read_end_context(read, k=ctx_flank)
-            
-            # Check fragment is proper length
+            # Check fragment is proper length. TLEN is negative on the reverse read and 0 when
+            # the mate is unmapped or on another chromosome, so the length is unknown.
+            frag_len = abs(read.template_length)
             min_len = cfg["min_len"]
             max_len = cfg["max_len"]
-            if frag_len < min_len or frag_len > max_len:
+            if frag_len == 0 or frag_len < min_len or frag_len > max_len:
                 stats.n_invalid_fragments += 1
                 stats.n_skipped += 1
                 continue
-            
+
+            # Restrict the read to the BED interval, as the paired branch does
+            read_span = (max(read.reference_start, start), min(read.reference_end, end))
+            if read_span[1] <= read_span[0]:
+                stats.n_skipped += 1
+                continue
+
+            highqual_positions = {
+                p for p in _high_quality_single_read(read, min_bq)
+                if read_span[0] <= p < read_span[1]
+            }
+            if not highqual_positions:
+                stats.n_skipped += 1
+                continue
+
+            start_ctx, end_ctx = _extract_read_end_context(read, k=ctx_flank)
+
             # Treat each read independently
             rows_iter, n_opp = extract_read_features(
                 read=read,
@@ -282,41 +301,19 @@ def process_chromosome(
                 context_flank=ctx_flank,
                 start_ctx=start_ctx,
                 end_ctx=end_ctx,
-                overlap=None,
+                overlap=read_span,
                 replication_bw=replication_bw,
                 mappability_bw=mappability_bw,
                 microsatellite_lookup=microsatellite_lookup,
                 repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
-                highqual_positions=highqual_overlap,
+                highqual_positions=highqual_positions,
             )
 
             stats.n_total += n_opp
             stats.n_reads += 1
+            consume_rows(rows_iter)
 
-            for row in rows_iter:
-                t = row["obs_type"]
-                if t == OBS_SNV:
-                    stats.n_mismatches += 1
-                elif t == OBS_MATCH:
-                    stats.n_matches += 1
-                elif t in [OBS_INSERTION, OBS_DELETION]:
-                        stats.n_indels += 1
-                    
-                if t == OBS_MATCH and n_match_sample > 0:
-                    seen += 1
-                    if len(worker_reservoir) < n_match_sample:
-                        worker_reservoir.append(row)
-                    else:
-                        j = random.randrange(seen)
-                        if j < n_match_sample:
-                            worker_reservoir[j] = row
-                else:
-                    rows_chunk.append(row)
-                    
-                if len(rows_chunk) >= chunk_size:
-                    flush_chunk(schema)
-                
     # Final flush
     flush_chunk(schema)
     
