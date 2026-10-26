@@ -248,6 +248,8 @@ The CLI supports restricting extraction to a set of genomic intervals:
 
 When this option is provided, `bam2df` only processes observations within the supplied BED intervals. This is useful for targeted experiments, debugging, panel-style extraction, or reducing runtime when only specific genomic regions are needed.
 
+Overlapping or touching intervals are merged before extraction, so a read in an overlap is extracted once.
+
 If no BED intervals are provided, extraction is performed genome-wide subject to the configured filters and blacklists.
 
 ---

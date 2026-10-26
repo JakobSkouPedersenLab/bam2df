@@ -181,10 +181,31 @@ def load_bed_intervals(path: str) -> dict[str, list[tuple[int, int]]]:
 
             intervals.setdefault(chrom, []).append((start, end))
 
-    for chrom in intervals:
-        intervals[chrom].sort()
+    # Overlapping or touching intervals are merged: processed separately, a read pair in
+    # an overlap would be extracted once per interval and its rows written twice.
+    merged = {}
+    for chrom, ivs in intervals.items():
+        starts, ends = merge_intervals([s for s, _ in ivs], [e for _, e in ivs])
+        merged[chrom] = list(zip(starts.tolist(), ends.tolist()))
+    return merged
 
-    return intervals
+def merge_intervals(starts, ends) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Sort half-open [start, end) intervals and merge those that overlap or touch.
+    Returns (starts, ends) as sorted int64 arrays of disjoint intervals.
+    """
+    starts = np.asarray(starts, dtype=np.int64)
+    ends = np.asarray(ends, dtype=np.int64)
+    if starts.size == 0:
+        return starts, ends
+
+    order = np.argsort(starts, kind="stable")
+    starts, ends = starts[order], ends[order]
+
+    # An interval opens a new group unless it starts at or before the furthest end so far
+    reach = np.maximum.accumulate(ends)
+    group_first = np.flatnonzero(np.r_[True, starts[1:] > reach[:-1]])
+    return starts[group_first], np.maximum.reduceat(ends, group_first)
 
 def split_by_chr(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
     """Split large blacklist into per-chromosome DataFrames."""
@@ -203,15 +224,15 @@ def split_by_chr(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
 def prepare_blacklist_arrays(blacklist_by_chr: dict[str, pl.DataFrame]) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """
     Convert each per-chromosome blacklist DataFrame into (starts, ends) NumPy arrays.
+
+    Intervals are merged so that the binary-search lookup, which checks only the last
+    interval starting at or before a position, also finds positions covered by an earlier,
+    longer interval.
     """
     out = {}
     for chrom, df in (blacklist_by_chr or {}).items():
         if not df.is_empty():
-            df_sorted = df.sort("start")
-            out[chrom] = (
-                df_sorted["start"].to_numpy(),
-                df_sorted["end"].to_numpy()
-            )
+            out[chrom] = merge_intervals(df["start"].to_numpy(), df["end"].to_numpy())
     return out
 
 def process_vcf(vcf_path):
