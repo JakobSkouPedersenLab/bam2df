@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+
 from src.bam2df import resolve_optional_path
+from src.features.labeling import add_tumor_mutation_labels
 from src.utility import io
 from src.utility.io import get_hpc_tmp_dir, load_microsatellites_for_chrom, load_repeatmasker_for_chrom
 
@@ -52,3 +55,11 @@ def test_optional_path_missing_is_reported(tmp_path: Path, capsys):
     present.write_text("")
     assert resolve_optional_path(str(present), "mappability") == str(present.resolve())
 
+
+def test_labels_join_on_the_feature_table_types():
+    df = pl.DataFrame(
+        {"chr": ["chr1", "chr1"], "genomic_pos": [100, 200], "obs_ref": ["A", "C"], "obs_alt": ["G", "T"]},
+        schema={"chr": pl.Utf8, "genomic_pos": pl.Int32, "obs_ref": pl.Utf8, "obs_alt": pl.Utf8},
+    )
+    out = add_tumor_mutation_labels(df, [("chr1", 100, "A", "G"), ("chr1", 100, "A", "G")]).collect()
+    assert out.sort("genomic_pos")["tumor_mut_present"].to_list() == [1, 0]

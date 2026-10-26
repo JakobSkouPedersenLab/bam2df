@@ -28,9 +28,11 @@ def add_tumor_mutation_labels(
     if not rows:
         return lf.with_columns(pl.lit(0).cast(pl.Int8).alias("tumor_mut_present"))
 
+    # Key types match the feature table's (_PL_SCHEMA), so the join does not depend on how
+    # a Polars version handles keys of different integer widths.
     mut_df = pl.DataFrame(
         rows,
-        schema=["chr", "genomic_pos", "obs_ref", "obs_alt"],
+        schema={"chr": pl.Utf8, "genomic_pos": pl.Int32, "obs_ref": pl.Utf8, "obs_alt": pl.Utf8},
         orient="row",
     ).unique()
 
