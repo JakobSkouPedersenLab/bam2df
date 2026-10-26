@@ -4,10 +4,9 @@ This document is the plan for porting `bam2df` from Python to Rust. It is writte
 implementation session can pick it up cold: it states what to build, how the Python behaves
 (including its quirks), how to prove the Rust output matches, and the steps in which to do it.
 
-**Parity reference:** the Python code at the commit that fixes the bugs listed in
-[section 3.1](#31-bugs-fixed-in-python-before-the-port) (the first commit after `d7ddf4c`). Where
-this document and that code disagree, the code wins, unless the disagreement is listed under
-[Decisions](#3-decisions).
+**Parity reference:** the Python code at commit `437da1c`, the last of the fixes listed in
+[section 3.1](#31-bugs-fixed-in-python-before-the-port). Where this document and that code disagree,
+the code wins, unless the disagreement is listed under [Decisions](#3-decisions).
 
 ---
 
@@ -16,10 +15,12 @@ this document and that code disagree, the code wins, unless the disagreement is 
 Each implementation session:
 
 1. Reads this file, then the [progress log](#10-progress-log) at the bottom to find the next step.
-2. Implements that step only, with its unit tests, and commits it.
+2. Implements that step only, with its unit tests, and inspects the diff statically. It does not run
+   any Rust command on the Windows machine (see below).
 3. Hands the user the step's **server test** commands from [section 8](#8-steps).
 4. The user runs them on the server and pastes the output back. A step is done when its pass
-   criteria hold. The session then updates the progress log.
+   criteria hold. With the user's approval, the session commits the step and updates the progress
+   log.
 
 Rule IDs such as **R-PAIR-3** refer to the behaviour rules in [section 5](#5-behaviour-spec-the-parity-contract).
 Cite them in code comments where the Rust reproduces a non-obvious Python behaviour.
@@ -28,8 +29,12 @@ Cite them in code comments where the Rust reproduces a non-obvious Python behavi
 
 | Machine | Has | Used for |
 |---|---|---|
-| Local Windows dev machine | No Python, no Rust (as of 2026-10-26) | Editing. Installing `rustup` locally is recommended so `cargo check` and `cargo test` run here; the `zstd` dependency needs the MSVC build tools. |
-| Server (Linux, SLURM, gwf) | conda env `bam2df` with pysam, polars, pyarrow; real data | Generating golden outputs with Python, building and running Rust on real data. |
+| Local Windows dev machine | conda env `dvfm` with polars, numpy, scipy, pyarrow, pytest; no pysam or pyBigWig (no Windows build). No Rust toolchain. | Writing code. Python tests that need no BAM run here (`tests/conftest.py` stubs pysam and pyBigWig and skips the tests marked `requires_pysam`). No Rust command is run here: no `cargo`, `rustc` or `rustfmt`. |
+| Server (Linux, SLURM, gwf) | conda env `bam2df` with pysam, polars, pyarrow; Rust toolchain; real data | Everything that builds or runs: the full Python suite, golden outputs, `cargo build`, `cargo test`, `cargo fmt`. |
+
+On the server, every command that builds, tests or reads data runs on a compute node through `srun`,
+never on the frontend. The commands in this document are written that way, with `$ACCOUNT` standing
+for the SLURM account. gwf targets already run on compute nodes.
 
 Patient data never leaves the server and is never committed. Only synthetic fixtures (section 7.1)
 go into the repository.
@@ -143,7 +148,7 @@ main
  │               → observations → rows (all columns incl. tracks, chromatin,
  │                  patient_id, sample_id, tumor_mut_present) → RowBuilder
  │           flush RowBuilder every chunk_size rows → row group in part file
- │        returns (part file path, stats) or None                      R-STAT-2
+ │        returns (part file path, if any rows, and stats)              R-STAT-2
  ├─ concat part files in chr1..chr22 order into the output parquet    R-OUT-5
  └─ write metadata CSV                                                 R-STAT-3
 ```
@@ -220,7 +225,7 @@ Defaults chosen for the port. The user can override any of them; record changes 
 | ID | Topic | Python behaviour | Rust behaviour |
 |---|---|---|---|
 | D1 | `use_paired_reads: false` | Fixed in Python (3.1) | Implement as Python does now: R-PAIR-10. |
-| D2 | Optional input path given but file missing | Skipped with a warning (fixed in Python, 3.1): `[WARN] {label} path not found: {path}; continuing without it.` for tracks and BED intervals; blacklists keep their `[RawDataLoader:WARN]` lines | Same lines. |
+| D2 | Optional input path given but file missing | Skipped with a warning (fixed in Python, 3.1): `[WARN] {label} path not found: {path}; continuing without it.`, with label `chromatin`, `replication timing`, `mappability`, `microsatellite`, `RepeatMasker` or `BED intervals`; blacklists keep their `[RawDataLoader:WARN]` lines (R-IN-1..3) | Same lines. |
 | D3 | Overlapping intervals in region blacklists | Merged at load time (fixed in Python, 3.1) | Same: R-IN-5. |
 | D4 | Narrow output dtypes (Int8 allele lengths, Int16 depth, ...) | Unverified (V8) | Keep the Python schema. Convert with checked casts; on overflow, fail with the column, value, chromosome and position. Widening is a step-8 option. |
 | D5 | Mutation catalog format | Python pickle | Tab-separated file with header `chr  genomic_pos  ref  alt`. `tools/pickle_to_tsv.py` converts existing pickles. A path ending in `.pkl` fails with a hint to run the converter. |
@@ -236,9 +241,10 @@ Defaults chosen for the port. The user can override any of them; record changes 
 
 ### 3.1 Bugs fixed in Python before the port
 
-Fixed in the Python code first, so the golden outputs show the corrected behaviour and the Rust
-implements it directly. Tests: `tests/test_intervals.py`, `tests/test_inputs.py` (run anywhere) and
-`tests/test_process_chromosome.py` (needs pysam, runs on the server).
+Fixed in the Python code first (commits `c1e5487` to `437da1c`), so the golden outputs show the
+corrected behaviour and the Rust implements it directly. Tests: `tests/test_intervals.py`,
+`tests/test_inputs.py` (run anywhere) and `tests/test_process_chromosome.py` (needs pysam, runs on
+the server); all pass on the server.
 
 | Bug | Fix |
 |---|---|
@@ -348,7 +354,8 @@ after loading. No name normalization except in R-IN-6.
   `[RawDataLoader:WARN] Low-power blacklist missing for {patient_id}` /
   `[RawDataLoader:WARN] Problematic blacklist missing for {patient_id}`.
 - **R-IN-4** All four region blacklists are `[start, end)` in 0-based coordinates and apply to `pos0`.
-- **R-IN-5** Build one merged `IntervalSet` per chromosome from the union of all four (D3).
+- **R-IN-5** Build one merged `IntervalSet` per chromosome from the union of all four (D3); overlapping
+  and touching intervals merge, as `merge_intervals` in `src/utility/io.py` does.
   `contains(pos0)`: `i = partition_point(|s| s <= pos0) - 1; i >= 0 && pos0 < ends[i]`.
 
 - **R-IN-6 Germline calls** (`--snp_blacklist_path`, port `src/utility/variant_blacklist.py`):
@@ -454,8 +461,8 @@ interval): query the BAM index for records overlapping the region, in file order
   outside `[min_len, max_len]`. The span is `[max(ref_start, start), min(ref_end, end))`; empty →
   skip. High-quality positions are the read's aligned positions in the span with quality
   `>= min_base_quality`; none → skip. `start_ctx`/`end_ctx` are the first and last k bases of the
-  read's own upper-cased query sequence. The read is the driver, with the span as the overlap.
-  `n_total += n_opp`, `n_reads += 1`.
+  read's own upper-cased query sequence (soft clips included). The read is the driver, with the span
+  as the overlap, so both mates of a pair are extracted. `n_total += n_opp`, `n_reads += 1`.
 
 ### 5.5 Extraction (R-EXT)
 
@@ -517,10 +524,11 @@ end, **case preserved** (R-REF-1).
   `c = w[50]`; count equal bytes (case-sensitive) leftwards from index 49 and rightwards from 51;
   result `left + 1 + right`.
 - **R-ROW-11** `read_index = query_pos − qa_start + 1`; `seq_length = query_alignment_length`;
-  `fragment_len` from R-PAIR-7; `first_in_pair = 1 if driver is read1 else 0` (always 0, Q3);
-  `strand = "rev"` if the driver is reverse else `"fwd"`.
+  `fragment_len` from R-PAIR-7 (R-PAIR-10 in single-read mode); `first_in_pair = 1 if driver is read1
+  else 0` (always 0 in paired mode, Q3); `strand = "rev"` if the driver is reverse else `"fwd"`.
 - **R-ROW-12** `obs_alt_len = len(alt)`, `obs_ref_len = len(ref)`, `len_delta = alt_len − ref_len`.
-- **R-ROW-13** `genomic_pos = pos1`; `chr` = chromosome name; `start_ctx`, `end_ctx` from R-PAIR-8.
+- **R-ROW-13** `genomic_pos = pos1`; `chr` = chromosome name; `start_ctx`, `end_ctx` from R-PAIR-8
+  (R-PAIR-10 in single-read mode).
 - **R-ROW-14** `qname` = BLAKE2b with digest size 8 (unkeyed) of the read name bytes, read as a
   little-endian u64. `Blake2bVar::new(8)` gives this; it is not a truncated 64-byte digest. Check
   against the vectors from step 0.
@@ -563,7 +571,8 @@ implementing.
   contiguous block** of rows for each chromosome and stops at its end; when loading all chromosomes
   in one pass, ignore later rows of a chromosome whose block already ended. Stable sort by start.
 - **R-TRK-5 Lookup** (both): `i = partition_point(|s| s <= pos0) − 1`; hit iff `i >= 0 && pos0 < ends[i]`.
-  Not merged: it checks only that one interval, as in Python. Microsatellite columns:
+  Not merged: it checks only that one interval, as in Python (Q11). A chromosome without rows has
+  an empty lookup, so the columns are still written (D7). Microsatellite columns:
   `in_microsatellite`, `microsatellite_motif` (`"no_microsatellite"` on a miss). RepeatMasker:
   `in_repeat_region`, `repeat_class` (`"no_repeat"`).
 - **R-TRK-6 Chromatin masks:** `{root}/chromatin_masks/{ATAC|DNase}/sparse_overlaps_by_chromosome/consensus/{chrom}.npz`
@@ -581,8 +590,7 @@ implementing.
 
 - **R-LBL-1** `patient_id`, `sample_id`: constant strings per run.
 - **R-LBL-2** `tumor_mut_present` (Int8): 1 if `(chr, genomic_pos, obs_ref, obs_alt)` is in the
-  catalog, else 0; always 0 without a catalog. The column is always present. (The README calls it
-  `tumor_label`; the code writes `tumor_mut_present`.)
+  catalog, else 0; always 0 without a catalog. The column is always present.
 
 ### 5.11 Output (R-OUT)
 
@@ -655,7 +663,7 @@ implementing.
 ## 6. Python quirks reproduced for parity
 
 The port reproduces these. Each is a candidate for a deliberate fix in step 8, which will change the
-output.
+output. Q5 and Q6 were bugs and are fixed in Python (section 3.1); the IDs are not reused.
 
 | ID | Quirk |
 |---|---|
@@ -667,6 +675,7 @@ output.
 | Q8 | `read_depth` counts both mates of an overlapping pair. |
 | Q9 | `start_ctx`/`end_ctx` include soft-clipped bases. |
 | Q10 | Mismatch opportunities count every high-quality position, not only positions where a mismatch could be emitted after germline filtering. |
+| Q11 | Microsatellite and RepeatMasker lookups check only the last interval starting at or before the position, so a position inside an earlier, longer interval (for example an L1 containing an Alu) is reported as outside. The blacklist lookup had the same flaw and was fixed by merging (3.1); annotations carry labels, so the fix here needs an interval query that picks a label. |
 
 ---
 
@@ -703,11 +712,13 @@ using only pysam, pyBigWig, numpy and scipy (pysam bundles `samtools`: use `pysa
   16. a stack of extra reads over one site for depth: some low MAPQ, `tlen 0`, duplicates, bases
       with quality < 15;
   17. reads on `chrX` (ignored).
-- Inputs: genomic BED, donor TSV, low-power and problematic files (no overlapping intervals; the
-  merge rule is unit-tested instead), a germline TSV (one exact SNV match, one same-site different
-  ALT, one exact indel), replication and mappability bigWigs with a gap (NaN), microsatellite and
-  RepeatMasker text files, ATAC and DNase `.npz` masks, a mutation catalog as pickle and as TSV
-  (D5) containing some emitted SNVs and an indel, a BED regions file with two intervals.
+- Inputs: genomic BED, donor TSV, low-power and problematic files (including a nested and a
+  touching pair of intervals, which both implementations merge), a germline TSV (one exact SNV
+  match, one same-site different ALT, one exact indel), replication and mappability bigWigs with a
+  gap (NaN), microsatellite and RepeatMasker text files (with one nested interval, Q11) and one
+  chromosome with reads but no annotation rows (D7), ATAC and DNase `.npz` masks, a mutation catalog
+  as pickle and as TSV (D5) containing some emitted SNVs and an indel, a BED regions file with two
+  overlapping intervals and one separate interval.
 - Config: `chunk_size: 50` (several chunks), `min_mapq: 20`, `n_match_sample: 0`.
 
 Runs (`tools/golden/run_python_golden.sh synthetic`), each saving the parquet, the metadata CSV,
@@ -750,10 +761,9 @@ strings with `^` blocks, and a few `get_sample_id`/`get_patient_id` results.
 |---|---|---|
 | V1 | `count_coverage` semantics: quality threshold 15, only `ACGT`, M/=/X pairs, callback | Read `count_coverage` in `pysam/libcalignmentfile.pyx` at the tag of the installed pysam version; note anything that differs from R-DEPTH. |
 | V2 | Arrow schema of the Python output | `schema.txt` from each run. |
-| V3 | Label join works (Int32 `genomic_pos` against the catalog's Int64) | S3 completes and has some `tumor_mut_present == 1`. If it crashes, record it: labels never worked at this commit. |
+| V3 | Labels are set | S3 has some `tumor_mut_present == 1`, at the catalog's records. |
 | V4 | Chromatin columns build (float arrays into Int8/UInt16) | S3 completes. |
 | V5 | npz format of the real masks | `tools/golden/inspect_inputs.py`: print `format`, `shape`, dtypes for a few masks. |
-| V6 | Overlapping intervals in the real region blacklists | Same script: count overlaps per file. Zero means D3 cannot change output. |
 | V7 | Soft-masking in the real FASTA | Same script: fraction of lowercase bases on chr21. |
 | V8 | Python on Int8/Int16 overflow | S7. |
 | V9 | Versions | Same script: pysam, polars, pyarrow, numpy, git commit. Saved to `versions.txt`. |
@@ -782,14 +792,18 @@ bam2df-compare logs EXPECTED.log ACTUAL.log         # "Finished chrN" stat lines
 
 ## 8. Steps
 
-Every step ends with a commit. "Server test" lists what the user runs; "Pass" is what must hold.
-Common server preamble:
+Every step ends with a commit, once the user approves it. "Server test" lists what the user runs;
+"Pass" is what must hold. Common server preamble (the `git pull` is the only frontend command):
 
 ```bash
 cd ~/bam2df && git pull
 conda activate bam2df
-cargo build --release && cargo test --release
+srun --account "$ACCOUNT" -c 4 --mem 8g --time 01:00:00 \
+    bash -c 'cargo fmt --check && cargo build --release && cargo test --release'
 ```
+
+The other server commands of a step run the same way, wrapped in `srun` with `-c`, `--mem` and
+`--time` sized to the job; for brevity they are listed below without the wrapper.
 
 ### Step 0: Golden fixtures (Python only)
 
@@ -809,7 +823,7 @@ bash tools/golden/run_python_golden.sh real
 reference, tracks, blacklists, regions); a template `tools/golden/real_inputs.env.example` with
 placeholders is committed.
 
-Pass: S1–S6 and R1–R5 complete; S7 result recorded; `vectors.json` written; the user commits
+Pass: S1–S6, S8 and R1–R5 complete; S7 result recorded; `vectors.json` written; the user commits
 `tests/golden/synthetic/` (synthetic only) and pastes `inspect.txt`, the V1 notes and the run
 timings back. Record the V answers in this document (section 7.2) before step 1.
 
@@ -818,8 +832,11 @@ timings back. Record the V answers in this document (section 7.2) before step 1.
 Build: the workspace; `config.rs`, `ids.rs`, `inputs/*`, `tracks/annotation.rs` loaders,
 `tmpdir.rs`, the CLI with `--inputs-only` (loads everything per R-RUN-1, prints the R-IN-7 line and a
 summary of interval and annotation counts per chromosome, exits 0), `compare.rs` and
-`bam2df-compare`. Unit tests: ports of all four pytest files, the `vectors.json` ID cases, IntervalSet
-merge and lookup, annotation lookup ties (stable sort), RepeatMasker first-block rule.
+`bam2df-compare`. Unit tests: ports of `tests/test_config.py`, `test_sample_id.py`,
+`test_variant_blacklist.py`, `test_blacklist_lookup.py`, `test_intervals.py` and the input cases of
+`test_inputs.py` (empty annotation lookups, scratch directory, missing-path warning); the
+`vectors.json` ID cases; IntervalSet merge and lookup; annotation lookup ties (stable sort);
+RepeatMasker first-block rule.
 
 Server test:
 ```bash
@@ -858,8 +875,7 @@ Server test: as step 2 without `--ignore read_depth`. Pass: exit 0.
 
 Build: region filters and germline sets wired into extraction (R-EXT). Integration test: S2.
 
-Server test: R2 with the step-2 commands. Pass: exit 0. If V6 found overlapping intervals and rows
-differ only at positions those overlaps cover, that is the expected D3 difference; list it here.
+Server test: R2 with the step-2 commands. Pass: exit 0.
 
 ### Step 5: Tracks, chromatin, labels, BED and match modes
 
@@ -879,8 +895,10 @@ Server test:
 # same result on 1 and 12 threads
 ./target/release/bam2df <R3 arguments> --output_file golden/rust/R3_t12.parquet --threads 12
 ./target/release/bam2df-compare parquet golden/R3/out.parquet golden/rust/R3_t12.parquet
-# full BAM, as a SLURM job with 12 cores and 50g
-/usr/bin/time -v ./target/release/bam2df <full arguments> --output_file golden/rust/full.parquet --verbose > golden/rust/full.log 2> golden/rust/full.time
+# full BAM, with the gwf job's resources
+srun --account "$ACCOUNT" -c 12 --mem 50g --time 06:00:00 \
+    /usr/bin/time -v ./target/release/bam2df <full arguments> --output_file golden/rust/full.parquet --verbose \
+    > golden/rust/full.log 2> golden/rust/full.time
 ./target/release/bam2df-compare fingerprint golden/full/out.parquet golden/rust/full.parquet
 ./target/release/bam2df-compare logs golden/full/python.log golden/rust/full.log
 ./target/release/bam2df-compare csv golden/full/out_metadata.csv golden/rust/full_metadata.csv
@@ -894,7 +912,7 @@ Build: `make_dataset(..., engine="python")` in `src/gwf/template.py` with a `bam
 `engine="rust"` runs `{bam2df_bin} {args_block}` instead of `python ../src/bam2df.py`, with the
 same `cores="12"`. In `src/gwf/workflow.py`, pass the mutation catalog as TSV (D5) when using Rust.
 README: build instructions (`cargo build --release`), the Rust command line, the mutation catalog
-format, the `tumor_mut_present` column name.
+format.
 
 Server test: run a handful of BAMs through both engines with gwf; `bam2df-compare fingerprint` each
 pair. Pass: all equal. Then switch the default engine to Rust. Removing the Python code is a
