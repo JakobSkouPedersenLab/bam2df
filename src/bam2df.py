@@ -187,8 +187,7 @@ def order_columns_by_schema(lf: pl.LazyFrame) -> pl.LazyFrame:
         *_REPMASK_SCHEMA.keys(),
         "patient_id",
         "sample_id",
-        "tumor_label",
-        "somatic_label",
+        "tumor_mut_present",
     ]
     available = lf.collect_schema().names()
     ordered = [c for c in schema_order if c in available]

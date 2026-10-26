@@ -188,8 +188,7 @@ The output table also includes:
 |---|---|
 | `patient_id` | Patient ID inferred from the BAM path. |
 | `sample_id` | Sample ID inferred from the BAM path. |
-| `tumor_label` | Label indicating whether the observation matches the supplied mutation catalog. |
-| `somatic_label` | Somatic mutation label, if available from the mutation labeling step. |
+| `tumor_mut_present` | `1` if the observation's chromosome, position, REF and ALT match a record in the mutation catalog, otherwise `0` (always `0` without a catalog). |
 
 ---
 
