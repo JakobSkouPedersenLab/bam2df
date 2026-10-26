@@ -47,6 +47,7 @@ def process_chromosome(
 ) -> Optional[tuple[list[Path], ChromStats]]:
     """
     Process one chromosome interval [start, end) and return chunk paths + ChromStats.
+    The chunk list is empty if no row was emitted; None is returned only for an empty interval.
     """
     if end <= start:
         return None
@@ -327,9 +328,8 @@ def process_chromosome(
         df.write_parquet(chunk_path, compression="zstd")
         chunk_paths.append(chunk_path)
 
-    if not chunk_paths:
-        return None
-
+    # Stats are returned even without chunks: the interval's reads and opportunities count
+    # toward the metadata although no row was emitted.
     return chunk_paths, stats
 
 def _process_chromosome_worker(
@@ -417,9 +417,9 @@ def _process_chromosome_worker(
                     verbose=verbose,
                 ) 
                 
-                if not result:
+                if result is None:
                     continue
-                
+
                 chunk_paths, stats = result
                 all_chunk_paths.extend(chunk_paths)
                 chrom_stats_total += stats
@@ -430,11 +430,9 @@ def _process_chromosome_worker(
         if mappability_bw is not None:
             mappability_bw.close()
 
-    if not all_chunk_paths:
-        return None
-
-    # Chromatin annotation (optional)
-    if chromatin_path is not None:
+    # Chromatin annotation (optional). A chromosome without rows is still returned, so its
+    # stats reach the metadata.
+    if chromatin_path is not None and all_chunk_paths:
         bin_size_bp = config["bin_size_bp"]
         chrom_root = Path(chromatin_path)
 

@@ -144,6 +144,16 @@ def test_single_read_mode_extracts_each_read(tmp_path: Path):
     assert stats.n_reads == 2 and stats.n_invalid_fragments == 0
 
 
+def test_interval_without_rows_still_returns_its_stats(tmp_path: Path):
+    # read2's mismatch lies outside the overlap: the pair is scanned but emits no row
+    bam, fasta, _ = _write_inputs(tmp_path, read1_mismatch=105, read2_mismatch=160)
+    chunk_paths, stats = _run(bam, fasta, tmp_path / "work", _config())
+
+    assert chunk_paths == []
+    assert stats.n_reads == 1
+    # every overlap position is high quality, so each is an opportunity
+    assert stats.n_total == READ1_START + READ_LEN - READ2_START  # 30
+
 
 def test_match_subsampling_is_reproducible(tmp_path: Path):
     bam, fasta, _ = _write_inputs(tmp_path, read1_mismatch=105, read2_mismatch=130)
