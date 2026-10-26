@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.bam2df import resolve_optional_path
 from src.utility import io
 from src.utility.io import get_hpc_tmp_dir, load_microsatellites_for_chrom, load_repeatmasker_for_chrom
 
@@ -40,4 +41,14 @@ def test_tmp_dir_is_a_new_subdirectory_and_cleanup_leaves_the_base(tmp_path: Pat
     assert not work.exists()
     # The base and other files in it survive
     assert keep.exists()
+
+
+def test_optional_path_missing_is_reported(tmp_path: Path, capsys):
+    assert resolve_optional_path(None, "mappability") is None
+    assert resolve_optional_path(str(tmp_path / "absent.bw"), "mappability") is None
+    assert "mappability path not found" in capsys.readouterr().out
+
+    present = tmp_path / "map.bw"
+    present.write_text("")
+    assert resolve_optional_path(str(present), "mappability") == str(present.resolve())
 

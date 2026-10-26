@@ -67,6 +67,20 @@ def parse_args():
 
     return parser.parse_args()
 
+def resolve_optional_path(path: str | None, label: str) -> str | None:
+    """
+    The absolute path of an optional input, or None if none was given or it does not exist.
+    A path that was given but does not exist is reported: the run continues without that
+    input, which drops its feature columns or, for BED intervals, extracts genome-wide.
+    """
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        print(f"[WARN] {label} path not found: {path}; continuing without it.", flush=True)
+        return None
+    return str(p.resolve())
+
 def load_blacklists(args, patient_id: str):
     """
     Load all blacklist resources and return a FilterContext ready for BamProcessor.
@@ -260,40 +274,12 @@ def main():
     else:
         print("[INFO] No mutation file provided, continuing without mutation index.")
         
-    # Optional chromatin
-    chromatin_path = (
-        str(Path(args.chromatin_path).resolve())
-        if args.chromatin_path and Path(args.chromatin_path).exists()
-        else None
-    )
-
-    # Optional replication timing
-    replication_path = (
-        str(Path(args.replication_path).resolve())
-        if args.replication_path and Path(args.replication_path).exists()
-        else None
-    )
-    
-    # Optional mappability
-    mappability_path = (
-        str(Path(args.mappability_path).resolve())
-        if args.mappability_path and Path(args.mappability_path).exists()
-        else None
-    )
-
-    # Optional microsatellite
-    microsatellite_path = (
-        str(Path(args.microsatellite_path).resolve())
-        if args.microsatellite_path and Path(args.microsatellite_path).exists()
-        else None
-    )
-
-    # Optional RepeatMasker
-    repeatmasker_path = (
-        str(Path(args.repeatmasker_path).resolve())
-        if args.repeatmasker_path and Path(args.repeatmasker_path).exists()
-        else None
-    )
+    # Optional feature tracks
+    chromatin_path = resolve_optional_path(args.chromatin_path, "chromatin")
+    replication_path = resolve_optional_path(args.replication_path, "replication timing")
+    mappability_path = resolve_optional_path(args.mappability_path, "mappability")
+    microsatellite_path = resolve_optional_path(args.microsatellite_path, "microsatellite")
+    repeatmasker_path = resolve_optional_path(args.repeatmasker_path, "RepeatMasker")
 
     # Sample and patient identity: explicit arguments win, the BAM path is the fallback
     sample_id = resolve_sample_id(args.bam_path, args.sample_id)
@@ -303,11 +289,7 @@ def main():
     filters = load_blacklists(args, patient_id)
     
     # Optional BED filters
-    bed_intervals_path = (
-        str(Path(args.bed_intervals_path).resolve())
-        if args.bed_intervals_path and Path(args.bed_intervals_path).exists()
-        else None
-    )
+    bed_intervals_path = resolve_optional_path(args.bed_intervals_path, "BED intervals")
     bed_intervals = load_bed_intervals(bed_intervals_path) if bed_intervals_path else None
 
     processor = BamProcessor(cfg=bam_config,
