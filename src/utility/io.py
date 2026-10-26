@@ -85,9 +85,8 @@ def load_microsatellites_for_chrom(path: str | pathlib.Path, chrom: str) -> Opti
             ends.append(end)
             motifs.append(motif)
 
-    if not starts:
-        return None
-
+    # No rows on this chromosome still gives a lookup, so the microsatellite columns are
+    # written for every chromosome and every chunk has the same schema.
     order = sorted(range(len(starts)), key=lambda i: starts[i])
     starts = [starts[i] for i in order]
     ends = [ends[i] for i in order]
@@ -139,9 +138,7 @@ def load_repeatmasker_for_chrom(
                 # stop scanning.
                 break
 
-    if not starts:
-        return None
-
+    # As for microsatellites: an empty lookup, not None, keeps the columns in every chunk.
     order = sorted(range(len(starts)), key=lambda i: starts[i])
     starts = [starts[i] for i in order]
     ends = [ends[i] for i in order]
