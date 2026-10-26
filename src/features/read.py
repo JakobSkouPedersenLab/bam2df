@@ -7,7 +7,7 @@ import numpy as np
 import pyBigWig
 import hashlib
 
-from src.features.constants import _MD_RE, _MD_TOKEN_RE
+from src.features.constants import _MD_RE
 from src.utility.data import (FilterContext, MicrosatelliteLookup, ReferenceCache,
                               RepeatMaskerLookup, _bw_value_at_1based, _get_read_depth, calculate_local_complexity)
 
@@ -310,30 +310,7 @@ def _in_bed_1based(chrom: str, pos1: int, lookup) -> bool:
     return i >= 0 and pos1 <= ends[i]
 
 def _iter_mismatches(read: pysam.AlignedSegment):
-    """Yield (qpos, rpos, ref_base) for true mismatches from MD tag."""
-    seq = read.query_sequence
-    if seq is None or not read.has_tag("MD"):
-        return
-
-    md = read.get_tag("MD")
-    ref_pos = read.reference_start
-    query_pos = 0
-
-    for m in _MD_TOKEN_RE.finditer(md):
-        if m.group(1):           # match run
-            n = int(m.group(1))
-            ref_pos += n
-            query_pos += n
-        elif m.group(2):         # deletion in reference
-            ref_pos += len(m.group(2))
-        elif m.group(3):         # mismatch
-            ref_base = m.group(3)
-            if query_pos < len(seq):     # avoid overrun
-                yield query_pos, ref_pos, ref_base
-            ref_pos += 1
-            query_pos += 1
-            
-def _iter_mismatches(read: pysam.AlignedSegment):
+    """Yield (qpos, rpos, ref_base) for mismatches, with the reference base taken from MD."""
     seq = read.query_sequence
     if not seq:
         return
@@ -423,47 +400,6 @@ def _get_dist_to_read_end(read: pysam.AlignedSegment, qpos: int) -> int:
     right = read.query_alignment_end - 1 - qpos
     return min(left, right)
 
-def _get_dist_to_indel_or_clip(
-    read: pysam.AlignedSegment,
-    ref_pos0: int
-) -> Optional[int]:
-    """
-    Return minimum distance (in reference coordinates) from the mismatch
-    to any insertion (I), deletion (D), or soft-clip (S) position.
-    Returns None if no such event is present.
-    """
-    best = None
-    rpos = read.reference_start
-    qpos = read.query_alignment_start
-
-    for op, length in (read.cigartuples or []):
-        if op in (0, 7, 8):  # M, =, X (consumes ref + query)
-            # If mismatch inside this block, distance to ends is a proxy
-            if rpos <= ref_pos0 < rpos + length:
-                d = min(ref_pos0 - rpos, (rpos + length - 1) - ref_pos0)
-                best = d if best is None else min(best, d)
-            rpos += length
-            qpos += length
-
-        elif op in (1, 2, 4):  # I, D, S all signal a local alignment event
-            d = abs(ref_pos0 - rpos)
-            best = d if best is None else min(best, d)
-            if op == 1:
-                qpos += length
-            elif op == 2:
-                rpos += length
-            else:
-                pass  # soft clip does not consume reference
-
-        else:
-            # N / padding, etc.
-            if op == 3:  # N: consumes ref
-                rpos += length
-            else:
-                qpos += length
-
-    return best
-
 def _get_homopolymer_run_length(
     ref_cache: ReferenceCache, chrom: str, pos_1based: int
 ) -> int:
@@ -535,19 +471,9 @@ def _build_read_row(
         min_frag_len=min_len,
         max_frag_len=max_len,
     )
-        
-    # Replication timing
-    replication_timing = None
-    if replication_bw is not None:
-        rt = replication_bw.values(chrom, pos_1based - 1, pos_1based)
-        if rt and rt[0] is not None and not math.isnan(rt[0]):
-            replication_timing = float(rt[0])
-        else:
-            replication_timing = None
-    
+
     base_qual_site = _get_base_qual_at(read, query_pos)
     dist_to_end = _get_dist_to_read_end(read, query_pos)
-    dist_to_indel_or_clip = _get_dist_to_indel_or_clip(read, pos_1based - 1)
     homopolymer_run_len = _get_homopolymer_run_length(ref_cache, chrom, pos_1based)
     
     # Optional replication timing
@@ -619,7 +545,6 @@ def _build_read_row(
 
         "base_qual_site": base_qual_site,
         "dist_to_end": dist_to_end,
-        "dist_to_indel_or_clip": dist_to_indel_or_clip,
         "homopolymer_run_len": homopolymer_run_len,
 
         "read_depth": read_depth,
