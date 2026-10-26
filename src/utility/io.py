@@ -2,6 +2,7 @@ import atexit
 import gzip
 import pathlib
 import shutil
+import tempfile
 from typing import List, Optional
 import numpy as np
 import pandas as pd
@@ -267,9 +268,10 @@ def process_vcf(vcf_path):
 
 def get_hpc_tmp_dir(prefix: str) -> pathlib.Path:
     """
-    Returns a job-local temporary directory suitable for large intermediate data.
-    Tries TMPDIR, then /tmp/$SLURM_JOB_ID, then TMP, then /tmp/<prefix>-<pid>.
-    Ensures directory exists and registers cleanup.
+    Returns a new job-local temporary directory suitable for large intermediate data.
+    It is created inside the first usable base of TMPDIR, /tmp/$SLURM_JOB_ID, TMP and /tmp,
+    and only this new directory is removed at exit: the base may be shared with other
+    files of the job, such as the reference copied to scratch.
     """
 
     candidates = []
@@ -283,19 +285,17 @@ def get_hpc_tmp_dir(prefix: str) -> pathlib.Path:
     if "TMP" in os.environ:
         candidates.append(os.environ["TMP"])
 
-    candidates.append(f"/tmp/{prefix}-{os.getpid()}")
+    candidates.append("/tmp")
 
-    for path in candidates:
-        if path:
-            p = pathlib.Path(path)
+    for base in candidates:
+        if base:
             try:
-                p.mkdir(parents=True, exist_ok=True)
-                if os.access(p, os.W_OK):
-                    # cleanup on exit
-                    atexit.register(lambda: shutil.rmtree(p, ignore_errors=True))
-                    return p
-            except Exception:
+                pathlib.Path(base).mkdir(parents=True, exist_ok=True)
+                p = pathlib.Path(tempfile.mkdtemp(prefix=f"{prefix}-{os.getpid()}-", dir=base))
+            except OSError:
                 continue
+            atexit.register(shutil.rmtree, p, ignore_errors=True)
+            return p
 
     raise RuntimeError("Could not create a writable temporary directory")
 
