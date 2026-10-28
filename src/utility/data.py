@@ -14,7 +14,7 @@ from scipy.sparse import csr_matrix
 import pyBigWig
 
 # Caching setup: dictionary to store coverage arrays for regions
-coverage_cache: dict[tuple[str, int], list[int]] = ({})  # Key: (contig, segment_start); Value: coverage array for that segment
+coverage_cache: dict[tuple[str, int, int, int, int], list[int],] = {}  # Key: (contig, segment_start); Value: coverage array for that segment
 CACHE_SEGMENT_SIZE = 10_000 # e.g., cache coverage in 1000-base segments to reuse across close positions
 MAX_SEGMENTS_CACHED = 20  # Limit cache size to avoid memory blow-up in extremely deep coverage scenarios
 current_cache_contig = None  # Track current contig in cache for easy invalidation

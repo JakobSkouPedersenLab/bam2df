@@ -288,7 +288,7 @@ def process_chromosome(
                 microsatellite_lookup=microsatellite_lookup,
                 repeatmasker_lookup=repeatmasker_lookup,
                 filters=filters,
-                highqual_positions=highqual_overlap,
+                highqual_positions=highqual_positions,
             )
 
             stats.n_total += n_opp
